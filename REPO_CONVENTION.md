@@ -100,29 +100,31 @@ semantic(metrics): 培训支出口径改为按 settle_date，EX 0.71→0.93（V2
 rag-kb/
 ├── AGENTS.md
 ├── REPO_CONVENTION.md
+├── TRAE-启动手册.md
 ├── Makefile
-├── docker-compose.yml
-├── .env.example
+├── docker-compose.dev.yml · Dockerfile
+├── requirements.txt · ruff.toml · alembic.ini
+├── .env.example                （`.env` 只在本机，进 `.gitignore`）
 ├── .github/workflows/ci.yml
 ├── config/                 ★ 语义层（SQL 通道的唯一对象来源，V2；走 Git 不进数据库）
 │   └── semantic_layer.yaml
-├── backend/
-│   ├── app/
-│   │   ├── api/            v1/ 路由
-│   │   ├── services/       业务编排
-│   │   │   └── nl2sql/     ★ SQL 通道：路由、生成、五道闸门（V2）
-│   │   │                   （是"唯一允许拼接动态 SQL"的例外，但只在语义层声明过的对象内）
-│   │   ├── repos/          数据访问（唯一写 SQL 的地方）
-│   │   ├── schemas/        Pydantic 模型
-│   │   ├── prompts/        提示词模板（.md，版本化）
-│   │   │   └── nl2sql/     ★ SQL 生成的提示词与 few-shot（V2）
-│   │   ├── workers/        离线任务
-│   │   ├── eval/           评估编排（数据集校验、逐条执行、对照检索、候选归类、报告）
-│   │   └── core/           配置/日志/鉴权/LLM 网关
-│   │       └── providers/  各厂商模型适配器（chat/embed/rerank 三层薄抽象）
-│   ├── alembic/            数据库迁移
-│   └── tests/
-├── frontend/               Next.js 15
+├── app/                    ← **实测结构：后端在仓库根，不套一层 `backend/`**（T01 定下的，别搬）
+│   ├── api/v1/             路由
+│   ├── services/           业务编排（chunker / generator / qa）
+│   │   └── nl2sql/         ★ SQL 通道：路由、生成、五道闸门（V2）
+│   │                       （是"唯一允许拼接动态 SQL"的例外，但只在语义层声明过的对象内）
+│   ├── repos/              数据访问（唯一写 SQL 的地方）
+│   ├── schemas/            Pydantic 模型
+│   ├── prompts/            提示词模板（`.md`，版本化，如 `answer_v1.md`）
+│   │   └── nl2sql/         ★ SQL 生成的提示词与 few-shot（V2）
+│   ├── workers/            离线任务（V0.1 起）
+│   ├── eval/               评估编排（数据集校验、逐条执行、对照检索、候选归类、报告）
+│   └── core/               配置/日志/鉴权/LLM 网关
+│       └── providers/      各厂商模型适配器（chat/embed/rerank 三层薄抽象）
+├── alembic/versions/       数据库迁移
+├── tests/                  单元 + 集成测试
+├── scripts/                `ingest.py` / `ask.py` 等离线脚本
+├── frontend/               Next.js 15（V0.1 起）
 ├── docs/
 ├── evals/
 │   ├── golden_set.yaml     题目本体（唯一事实来源，走 Git）
