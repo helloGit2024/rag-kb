@@ -45,6 +45,7 @@ from app.repos.document_repo import insert_document
 from app.services.chunker import chunk_text
 from app.services.file_validator import ensure_not_duplicate, validate_metadata
 from app.services.md_parser import parse_markdown
+from app.services.permission import document_scope_key
 
 # 分块策略（与 app/services/chunker.py 默认值、V-1 脚本一致）
 CHUNK_SIZE = 512
@@ -88,16 +89,22 @@ def ingest_document(
         kb_id: 目标知识库 id。
         filename: 上传文件名（决定 source_type 与原文对象扩展名）。
         data: 文件字节内容。
-        scope: 可见范围。V-1 固定 "internal"，scope_key 直接取该值，
-            真实推导（用户/文档 → scope_key）属 T14 / T15。
+        scope: 文档可见范围（`public` / `internal` / `dept:<部门>`）。
+            由 `document_scope_key()` 校验并推导成 chunks.scope_key（T14）。
+            用户侧的可见范围解析在 T15。
 
     Raises:
         FileValidationError: 类型 / 大小 / 去重校验失败（T12），含契约错误码。
+        ScopeError: scope 取值不在白名单内（T14）。
         IngestError: 非 UTF-8 编码、解析或分块为空、向量数与分块数不一致。
     """
     # ---- ① 校验 + 去重（只读，无写入；尽早失败）----
     validated = validate_metadata(filename, data)
     ensure_not_duplicate(session, kb_id=kb_id, file_md5=validated.file_md5)
+
+    # scope → scope_key（T14 文档侧推导）。放在写任何东西之前：
+    # 非法 scope 必须在这里失败，绝不写入越权的 documents/chunks
+    scope_key = document_scope_key(scope)
 
     # ---- ② 解析（去页眉页脚）----
     try:
@@ -145,14 +152,15 @@ def ingest_document(
             parsed_key=key_parsed,
             file_md5=validated.file_md5,
             file_size=validated.file_size,
-            scope=scope,
+            scope=scope_key,
             status="done",
         )
         insert_chunks(
             session,
             doc_id=doc_id,
             kb_id=kb_id,
-            scope_key=scope,  # V-1：scope_key 由 doc.scope 直接取值（T15 改真实推导）
+            # T14：scope_key 由 document_scope_key() 推导，与 documents.scope 同值
+            scope_key=scope_key,
             items=[
                 ChunkInsert(
                     content=c.content,

@@ -1,12 +1,12 @@
-"""ORM 模型定义（V-1）。
+"""ORM 模型定义（V-1 骨架 → V0.1 · T14）。
 
-只定义 documents / chunks 两张表。
+表：documents / chunks（V-1骨架）+ users / user_scope_grants（V0.1 T14）。
 ★ app/repos/ 是唯一允许出现 SQL 的层；这里只放表结构元数据，不写查询 SQL。
 
-V-1 取舍：
-- documents.kb_id / uploaded_by 暂不加 FK（关联表 users/knowledge_bases 在 V0.1 才建），
-  等 V0.1 建完关联表后用迁移补 FK（符合 R8：先加字段、后加约束）。
-- chunks.doc_id 加 FK → documents.id。
+FK 取舍（R8：先加字段、后加约束）：
+- documents.uploaded_by → users.id：V-1 已加字段（可空），T14 补 FK 约束。
+- documents.kb_id：等 T21 建 knowledge_bases 后再补 FK。
+- chunks.doc_id → documents.id（V-1 已建）。
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -48,8 +49,10 @@ class Document(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
     error_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     scope: Mapped[str] = mapped_column(Text, nullable=False, default="internal")
-    # V-1 不加 FK，V0.1 补 → users.id
-    uploaded_by: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # T14 补 FK → users.id（V-1 已有字段，R8 的"先字段、后约束"第二步）
+    uploaded_by: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("users.id"), nullable=True
+    )
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -109,4 +112,53 @@ class Chunk(Base):
         Index("idx_chunks_scope_kb", "scope_key", "kb_id"),
         # 去重与清理
         Index("idx_chunks_doc_idx", "doc_id", "chunk_index", unique=True),
+    )
+
+
+class User(Base):
+    """用户表（V0.1 · T14）。字段见 docs/data-model.md 2.1。
+
+    role 列现在就有、但 V0.1 不做 RBAC 判定（V1 才启用）；
+    本版权限只用到 dept（本部门自动可见）与 user_scope_grants。
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    dept: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    role: Mapped[str] = mapped_column(Text, nullable=False, default="user")
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint("username", name="uq_users_username"),
+    )
+
+
+class UserScopeGrant(Base):
+    """授权表（V0.1 · T14）。字段见 docs/data-model.md 2.5。
+
+    ★ 用授权表而不是在 users 上放单个部门字段：一个人可能同时属于多个范围
+      （本部门 + 跨部门项目组 + 公开），统一用 scope_key 字符串抽象更易扩展。
+    """
+
+    __tablename__ = "user_scope_grants"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id"), nullable=False
+    )
+    scope_key: Mapped[str] = mapped_column(Text, nullable=False)
+    granted_by: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    granted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+
+    __table_args__ = (
+        # 权限解析要按 user_id 取授权列表，建索引免得每次全表扫
+        Index("ix_user_scope_grants_user_id", "user_id"),
     )
