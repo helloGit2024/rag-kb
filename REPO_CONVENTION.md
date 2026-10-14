@@ -12,13 +12,13 @@
 
 | 对象 | 约定 | 示例 |
 |------|------|------|
-| Python 变量/函数 | snake_case | `chunk_size`, `get_user_scope()` |
+| Python 变量/函数 | snake_case | `chunk_size`, `resolve_scope_keys()` |
 | Python 类 | PascalCase | `ChunkStrategy`, `LlmGateway` |
 | Python 常量 | UPPER_SNAKE | `MAX_QUERY_LENGTH = 2000` |
 | TypeScript 变量/函数 | camelCase | `topK`, `fetchAnswer()` |
 | TypeScript 组件 | PascalCase，文件名同组件名 | `CitationCard.tsx` |
 | 数据库表 | snake_case，复数 | `documents`, `chunks` |
-| 数据库字段 | snake_case | `created_at`, `scope_hash` |
+| 数据库字段 | snake_case | `created_at`, `scope_snapshot` |
 | 环境变量 | UPPER_SNAKE，前缀 `KB_` | `KB_DATABASE_URL` |
 | API 路径 | 小写 + 连字符，版本前缀 | `/api/v1/knowledge-bases` |
 | JSON 字段 | snake_case（与 Python 一致） | `{"doc_id": "...", "refused": false}` |
@@ -152,8 +152,9 @@ rag-kb/
 > `golden_set.yaml`。**注意 `pending/` 下的文件不是题库的一部分** ——
 > 它们不参与任何评估，只是"待办草稿"。理由见 `docs/adr/0008` 与 `spec.md` AC-25。
 
-**迁移文件命名**：`alembic/versions/20261120_1430_add_scope_hash_to_chunks.py`
-（日期时间前缀，保证顺序可读）
+**迁移文件命名**：`alembic/versions/20261120_1430_add_scope_snapshot_to_query_logs.py`
+（日期时间前缀，保证顺序可读 —— 注：现有 `0001_initial` / `0002_users_and_scope_grants`
+用的是四位数字前缀，见 `⚙️ 待你确认`）
 
 ---
 

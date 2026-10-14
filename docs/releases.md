@@ -113,6 +113,8 @@
 - 用数据库表定义"用户 → 知识库/部门 → 可见范围"映射
 - 无管理界面，用 SQL 脚本维护
 - 无登录，用 `X-KB-User` header 传测试账号
+- ★ **每次问答落一行 `query_logs`（含 `scope_snapshot`）**：用户权限会变，
+  这是事后排查越权问题的**唯一手段**（`data-model.md` 2.9、`security.md` 2.2）
 
 **8. 评估（这一项不能砍）**
 - `evals/golden_set.yaml` 30 条（含 refuse 6 条、permission 4 条、edge 2 条）

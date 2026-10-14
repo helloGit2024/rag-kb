@@ -19,7 +19,7 @@ alwaysApply: false
 
 ## 二、检索（Retrieval）
 
-- **权限条件必须在 SQL 里**（`AGENTS.md` R2）。检索函数签名必须显式接收 `user_scope`，**不允许有"不传权限"的默认重载**——参数不存在，代码就写不出越权查询。
+- **权限条件必须在 SQL 里**（`AGENTS.md` R2）。检索函数签名必须显式接收 `scope_keys`，**不允许有"不传权限"的默认重载**——参数不存在，代码就写不出越权查询。
 - 权限过滤必须在**向量检索的同一句 SQL 内**完成。禁止模式：
   ```python
   # ✗ 绝对禁止
@@ -44,7 +44,7 @@ alwaysApply: false
   3. **拒答指令**：无充分依据时输出固定句式（R5）
 - **引用编号由程序注入，不得让模型自己编号。** 生成后必须做"引用回绑"：把 `[n]` 映射回真实 `chunk_id`，无法映射的一律丢弃并记入日志。
 - 输出必须过一遍数字检查：答案中出现的金额/日期/数量，必须在引用原文里能**逐字**找到。找不到 → 判定为可疑，按拒答处理（R6）。
-- 每条问答都要落结构化记录：`question`、`retrieved_chunk_ids`、`answer`、`cited_chunk_ids`、`refused`、`degraded`、`cost_cny`、分段耗时。
+- 每条问答都要落结构化记录到 `query_logs` 表（字段见 `docs/data-model.md` 2.9）：`question`、`retrieved_chunk_ids`、`answer`、`cited_chunk_ids`、`refused`、`degraded`、`cost_cny`、`scope_snapshot`、分段耗时。
 
 ## 五、拒答
 

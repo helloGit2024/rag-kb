@@ -36,7 +36,7 @@ tables:
   - name: expense_claims
     title: 报销申请单
     synonyms: [报销, 报销单, 费用报销, 报销申请]
-    # ★ 行级权限列：权限解析时把 user_scope 翻译成 WHERE <scope_column> IN (...)
+    # ★ 行级权限列：权限解析时把 scope_keys 翻译成 WHERE <scope_column> IN (...)
     scope_column: dept_id
     columns:
       - { name: id,          type: bigint,  desc: 单据号 }

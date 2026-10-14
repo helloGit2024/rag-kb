@@ -30,9 +30,9 @@ alwaysApply: false
 ## 三、鉴权与权限
 
 - 鉴权在路由层统一用依赖注入（FastAPI `Depends`）完成，**不允许每个接口自己解析 token**。
-- 从 token 解析出的 `user_scope` 必须**显式向下传递**到 service 与 repo 层（R2、R3）。
+- 从 token 解析出的 `scope_keys` 必须**显式向下传递**到 service 与 repo 层（R2、R3）。
 - 权限不足时的响应：**不要用 404 掩盖 403**。本项目明确返回 `403 FORBIDDEN_SCOPE`，并在审计日志中记录（掩盖会让用户以为文档不存在，也会让排障困难）。
-- 缓存 key 生成函数**必须**接收 `user_scope`（R3），且使用 `scope` 的哈希而不是明文。
+- 缓存 key 生成函数**必须**接收 `scope_keys`（R3），且使用它的哈希而不是明文。
 
 ## 四、数据库与迁移（Alembic）
 
@@ -45,6 +45,12 @@ alwaysApply: false
 
 ## 五、日志与可观测性
 
-- 结构化日志（JSON），必须包含 `request_id`、`user_id`、`scope_hash`、`route`、`latency_ms`。
+- 结构化日志（JSON），必须包含 `request_id`、`user_id`、`scope_snapshot`、`latency_ms`；
+  `route` 属 V2（V-1 没有路由器，不要提前造一个）。
+  > `scope_snapshot` 是**落盘字段名**（值 = 内存里的 `scope_keys`），
+  > 与 `query_logs.scope_snapshot` 同名。**不要写成 `scope_hash`** —— 哈希只用于缓存 key
+  > 的指纹（`app/services/permission.py` 保证顺序稳定）。
+  > **也不要写成 `user_scope`** —— 那是历史遗留的旧名，已废弃。
+  > 权限范围相关的全部词（值 / 落盘字段 / 指纹 / 表名 / 函数名）见 `docs/glossary.md` 第七节。
 - **禁止把全文文档内容、完整提示词、密钥写入日志**。检索日志只记 chunk_id 与分数，不记 chunk 文本。
 - 审计日志表只允许 INSERT：用数据库层面的约束保证不可 UPDATE/DELETE（V1 生效，见 `docs/security.md`）。

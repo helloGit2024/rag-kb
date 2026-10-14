@@ -589,7 +589,7 @@ return visible[:5]                                # 可能只剩 2 条 → 召�
 SELECT c.id, c.content, c.doc_id, c.char_start, c.char_end,
        1 - (c.embedding <=> :query_vec) AS score
 FROM chunks c
-WHERE c.scope_key = ANY(:user_scope_keys)     -- ★ 权限条件
+WHERE c.scope_key = ANY(:scope_keys)          -- ★ 权限条件
   AND c.kb_id = ANY(:accessible_kb_ids)       -- ★ 知识库条件
 ORDER BY c.embedding <=> :query_vec           -- 向量距离排序
 LIMIT :top_k;

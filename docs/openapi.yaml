@@ -1506,7 +1506,7 @@ components:
         expected_answer: { type: string }
         expected_sources: { type: array, items: { type: string } }
         should_refuse: { type: boolean }
-        user_scope: { type: string, description: 用于越权题；提问者的权限范围 }
+        scope_keys: { type: string, description: "用于越权题；该题设定的提问者可见范围（运行时即 scope_keys，逗号分隔可写多个）" }
         confirmed: { type: boolean, description: 标准答案是否已人工确认 }
         notes: { type: string }
 

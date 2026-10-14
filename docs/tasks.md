@@ -20,7 +20,7 @@
 | T02 | 数据库初始化：`documents` / `chunks`（含 `scope_key` + 向量列）| `alembic/versions/*`、`app/repos/models.py` | T01 | `make migrate` 成功；`make migrate-down` 也能成功 | 需你帮我验 | ~120 |
 | T03 | 分块器（递归字符，512/64，按段落边界） | `app/services/chunker.py`、`tests/test_chunker.py` | - | 拿一份真实 txt，分块结果**不断句**、块大小分布合理 | **我能验收** | ~110 |
 | T04 | 本地嵌入服务接入 + 向量化脚本 | `scripts/ingest.py`、`app/core/embedding.py` | T02,T03 | 跑一次入库，打印"共 N 块，耗时 M 秒"；实测吞吐 ≥ 8 块/秒 | 需你帮我验 | ~130 |
-| T05 | 向量检索（检索函数签名带 `user_scope`，SQL 含权限过滤条件；**V-1 传固定值不做真实隔离**） | `app/repos/chunk_repo.py`、`tests/test_retrieval.py` | T02,T04 | 提一个已知问题，Top-5 里**包含**答案所在块（V-1 不测权限隔离，真实过滤在 V0.1 T15 启用） | **我能验收** | ~100 |
+| T05 | 向量检索（检索函数签名带 `scope_keys`，SQL 含权限过滤条件；**V-1 传固定值不做真实隔离**） | `app/repos/chunk_repo.py`、`tests/test_retrieval.py` | T02,T04 | 提一个已知问题，Top-5 里**包含**答案所在块（V-1 不测权限隔离，真实过滤在 V0.1 T15 启用） | **我能验收** | ~100 |
 | T06 | LLM 网关（超时/重试/Token 记账） | `app/core/llm_gateway.py` | T01 | 故意把地址改错，网关**重试后优雅报错**，不是崩 | 需你帮我验 | ~140 |
 | T07 | 提示词 + 引用绑定 + 拒答判定 | `app/prompts/answer_v1.md`、`app/services/generator.py` | T05,T06 | ① 能答的问题答案带 `[1]` 且引用对得上；② 问库里没有的问题，**恰好**输出固定句式 | **我能验收** | ~130 |
 | T08 | `POST /api/v1/query` 接口 + `/healthz` | `app/api/v1/query.py`、`app/schemas/query.py` | T07 | 用 curl 提问拿到 JSON；超长问题返回 400 **且不调用模型** | 我能验收 | ~110 |
@@ -88,13 +88,16 @@
 | T31 | 建立第一份基线数字 + `make eval-compare` | T28 | 能一键对比两次评估结果 | 我能验收 |
 | T32 | 延迟与成本埋点（分段耗时 + Token 记账） | T06 | 问答响应里能看到 `retrieve_ms` / `generate_ms` / `cost_cny` | 我能验收 |
 | T33 | ★ **评估结果入库**：`eval_datasets` / `eval_runs` / `eval_run_items` + 迁移；`make eval` 改为写表 | T02,T31 | 跑一次 `make eval`，库里多出 1 条 run + 30 条 item；item 里能看到 `answer` 全文与分段耗时；`make migrate-down` 可回滚 | **我能验收** |
+| T34 | **问答流水入库**：`query_logs` 表 + 迁移 + 每次问答落一行（含 `scope_snapshot`） | T15,T32 | 提一个问题后库里多一行；`scope_snapshot` 与生效权限一致；`make migrate-down` 能回滚 | **我能验收** |
 
-> **为什么 V0.1 就建这三张表，而界面却要等到 V1？**
+> **为什么 V0.1 就把这些表建起来，而界面却要等到 V1？**
 > 因为**地基要早、平台要晚**。
 > 评估本身就是 V0.1 的退出门禁（见 `releases.md`），
 > 如果 V0.1 的结果只落 JSON 文件、V1 才改成表，等于把"基线说不清"这件事
 > 拖到你最需要它的时候。而界面（面板、选择器、导出）
 > 是"给人看"的层，晚做不影响你拿到正确数字 —— 见 `docs/adr/0008`。
+> 同理，**T34 的 `query_logs` 也是 V0.1 的"地基表"**：它是埋点与越权排查
+> （`scope_snapshot`）的唯一落点，界面的历史记录页同样留到 V1。
 >
 > V0.1 阶段看指标的方式：`make eval` 的输出 + 用 SQL 查 `eval_runs`。
 > 没有页面，但数字是真的。

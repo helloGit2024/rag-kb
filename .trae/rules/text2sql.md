@@ -59,7 +59,7 @@ alwaysApply: false
 ## 四、权限：与文档通道同源
 
 - SQL 通道的可见性过滤**必须复用文档通道同一段权限解析代码**，
-  把 `user_scope` 翻译成业务表的 `scope_column` 条件，**拼进 SQL 的 WHERE**。
+  把 `scope_keys` 翻译成业务表的 `scope_column` 条件，**拼进 SQL 的 WHERE**。
   两条独立的权限实现迟早会漂移，而漂移的形态是
   "**文档里看不到、SQL 里能算出来**"——比文档越权更隐蔽。
 - `nl2sql_logs.scope_snapshot` 与 `query_logs.scope_snapshot` 存**同一个值**。
