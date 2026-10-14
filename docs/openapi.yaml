@@ -1,0 +1,1637 @@
+openapi: 3.1.0
+info:
+  title: 企业知识库 RAG 平台 API
+  version: 0.1.0
+  description: |
+    机读接口契约。**这是接口的唯一事实来源**，说明见 docs/api-contract.md。
+    纪律：改接口先改本文件，再改代码。不兼容改动必须升级路径版本号。
+servers:
+  - url: http://localhost:8000
+    description: 本地开发
+  - url: http://kb.internal:8000
+    description: 内网试点环境
+
+tags:
+  - name: health
+  - name: query
+  - name: feedback
+  - name: kb
+  - name: documents
+  - name: tasks
+  - name: admin
+  - name: eval
+  - name: sql
+    description: |
+      ★ V2 · Text-to-SQL 数据查询通道（`docs/text-to-sql.md`、`docs/adr/0009`）。
+      三条与别的 tag 不同的约定：
+      ① 该通道**只允许 SELECT**，连接账号只有 SELECT 权限；
+      ② 结果里的数字只能来自执行结果，模型不得自行计算（`AGENTS.md` R19）；
+      ③ 答案必须附带生成的 SQL 与聚合范围标注（`scope_mode`）。
+    description: 评估平台（V1）：数据集元数据、评估运行、逐条结果、归因、BadCase 闭环
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: 健康检查（含数据库、Redis、模型连通性）
+      security: []
+      responses:
+        "200":
+          description: 各依赖状态
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ok, degraded, down] }
+                  checks:
+                    type: object
+                    properties:
+                      postgres: { type: string, enum: [ok, down] }
+                      redis: { type: string, enum: [ok, down] }
+                      embedding_model: { type: string, enum: [ok, down] }
+                      llm_gateway: { type: string, enum: [ok, degraded, down] }
+
+  /api/v1/query:
+    post:
+      tags: [query]
+      summary: 知识库问答（核心接口）
+      description: |
+        只在该用户有权访问的范围内检索。知识库无相关内容时 refused=true，
+        且 answer 必须恰为 "根据现有资料，我无法回答这个问题。"
+
+        **V2 起这是双通道入口**：内部路由决定走文档（doc）、数据（sql）
+        还是两者并列（hybrid）。三条不变约定：
+        ① 两个通道**共用同一段权限解析代码**，因此可见范围一致；
+        ② 路由不确定时**一律回落 doc**；
+        ③ channel=sql 时响应**必须**带 `sql` 对象（含 SQL 原文与聚合范围），
+           否则用户无法判断数字是怎么来的。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                question:
+                  type: string
+                  minLength: 1
+                  maxLength: 2000
+                  description: 超长返回 QUESTION_INVALID，且不产生模型调用
+                kb_ids:
+                  type: array
+                  items: { type: integer }
+                  description: 不传则检索全部有权知识库
+                top_k:
+                  type: integer
+                  default: 5
+                  minimum: 1
+                  maximum: 20
+                filters:
+                  type: object
+                  description: 元数据过滤（文档类型、时间范围等）
+                channel:
+                  type: string
+                  enum: [auto, doc, sql]
+                  default: auto
+                  description: |
+                    ★ V2 新增。强制指定通道，便于排查与给用户一个"只查数据"的显式入口。
+                    默认 `auto` 走内部路由；**路由不确定时一律回落 doc**
+                    （文档通道有可靠的拒答机制，SQL 通道没有）。
+                    传 `sql` 但数据源未启用时返回 503，**不静默改走 doc**。
+      responses:
+        "200":
+          description: 成功（含拒答与降级两种特殊状态）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QueryResult" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ModelUnavailable"
+
+  /api/v1/query/stream:
+    get:
+      tags: [query]
+      summary: 流式问答（SSE）
+      description: |
+        事件序列：meta → citation* → delta* → done。
+        前端连接失败或 5 秒无事件时，回退到 POST /api/v1/query。
+      parameters:
+        - name: question
+          in: query
+          required: true
+          schema: { type: string, maxLength: 2000 }
+        - name: kb_ids
+          in: query
+          schema: { type: string, description: 逗号分隔 }
+      responses:
+        "200":
+          description: text/event-stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+
+  /api/v1/feedback:
+    post:
+      tags: [feedback]
+      summary: 提交答案反馈（👍👎）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query_log_id, rating]
+              properties:
+                query_log_id: { type: integer }
+                rating: { type: string, enum: [up, down] }
+                reason:
+                  type: string
+                  description: rating=down 时必填
+                  enum: [hallucination, missing_recall, off_topic, wrong_number, permission_error, other]
+                comment: { type: string, maxLength: 500 }
+      responses:
+        "204": { description: 已记录 }
+
+  /api/v1/knowledge-bases:
+    get:
+      tags: [kb]
+      summary: 知识库列表
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20, maximum: 100 }
+      responses:
+        "200":
+          description: 分页结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/KnowledgeBase" }
+                  total: { type: integer }
+                  page: { type: integer }
+                  page_size: { type: integer }
+    post:
+      tags: [kb]
+      summary: 创建知识库
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 100 }
+                description: { type: string, maxLength: 500 }
+                default_scope:
+                  type: string
+                  default: internal
+                  description: 新文档默认可见范围，spec.md Q-01
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KnowledgeBase" }
+
+  /api/v1/knowledge-bases/{kb_id}:
+    patch:
+      tags: [kb]
+      summary: 修改知识库
+      parameters:
+        - $ref: "#/components/parameters/KbId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: string }
+                default_scope: { type: string }
+      responses:
+        "200":
+          description: 已更新
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KnowledgeBase" }
+    delete:
+      tags: [kb]
+      summary: 删除知识库（级联清理文档与向量）
+      parameters:
+        - $ref: "#/components/parameters/KbId"
+      responses:
+        "204": { description: 已删除 }
+
+  /api/v1/documents:
+    get:
+      tags: [documents]
+      summary: 文档列表（含解析状态与失败原因）
+      parameters:
+        - name: kb_id
+          in: query
+          schema: { type: integer }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, parsing, chunking, embedding, done, failed]
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20, maximum: 100 }
+      responses:
+        "200":
+          description: 分页结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Document" }
+                  total: { type: integer }
+    post:
+      tags: [documents]
+      summary: 上传文档（异步）
+      description: 必须在 500ms 内返回 task_id，解析与向量化一律异步执行。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, kb_id]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: 最大 20 MB，仅支持 .txt / .md
+                kb_id: { type: integer }
+                title: { type: string }
+                scope:
+                  type: string
+                  description: 不传则用知识库默认值
+      responses:
+        "202":
+          description: 已入队
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task_id: { type: integer }
+                  doc_id: { type: integer }
+                  status: { type: string }
+        "409":
+          $ref: "#/components/responses/DuplicateFile"
+        "413":
+          $ref: "#/components/responses/FileTooLarge"
+        "415":
+          $ref: "#/components/responses/FileTypeUnsupported"
+
+  /api/v1/documents/{doc_id}:
+    delete:
+      tags: [documents]
+      summary: 删除文档（触发全链路清理，见 AC-19）
+      description: |
+        必须同步清除：chunks 与向量、MinIO 原文与解析文本、相关缓存，
+        并标记评估集中引用该文档的题目为 stale。并写审计日志。
+      parameters:
+        - name: doc_id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "204": { description: 已删除 }
+
+  /api/v1/tasks/{task_id}:
+    get:
+      tags: [tasks]
+      summary: 查询任务状态
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: 任务状态（error_reason 必须是给人看的话）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ParseTask" }
+
+  /api/v1/admin/model-test:
+    post:
+      tags: [admin]
+      summary: 模型连通性测试
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model_type]
+              properties:
+                model_type: { type: string, enum: [chat, embedding, rerank] }
+                base_url: { type: string }
+                api_key: { type: string, description: 仅用于测试，不得落库明文 }
+                model_name: { type: string }
+      responses:
+        "200":
+          description: 测试结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  latency_ms: { type: integer }
+                  message: { type: string }
+      x-note: |
+        api_key 是"一次性输入"：只用于本次测试，响应返回后即丢弃，绝不落库。
+        已保存的配置用的是 api_key_ref（环境变量名），测已保存配置时不需要传 api_key。
+
+  /api/v1/admin/models:
+    get:
+      tags: [admin]
+      summary: 模型配置列表（V1）
+      description: 返回全部模型的配置。api_key_ref 只返回变量名，永不返回密钥明文。
+      parameters:
+        - name: model_type
+          in: query
+          schema: { type: string, enum: [chat, embedding, rerank] }
+          description: 按类型过滤；不传返回全部
+      responses:
+        "200":
+          description: 模型配置列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ModelConfig" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+    post:
+      tags: [admin]
+      summary: 新建模型配置（V1）
+      description: |
+        保存前**必须**自动调用一次连通性测试：
+          - 测试失败 → 返回 422 MODEL_TEST_FAILED，且不落库（不允许脏配置进库）
+          - 测试成功 → 落库并返回 201
+        这是本接口唯一与普通 CRUD 不同的地方，也是它的价值所在。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ModelConfigInput" }
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelConfig" }
+        "409":
+          description: 同类型下已存在同名配置（DUPLICATE_MODEL_NAME）
+        "422":
+          description: 连通性测试未通过，未落库（MODEL_TEST_FAILED）
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/admin/models/{model_id}:
+    parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    patch:
+      tags: [admin]
+      summary: 修改模型配置（V1）
+      description: |
+        两条特殊规则（都由 data-model.md 2.10 的硬约束推导）：
+        1. 修改 embedding 类的 embedding_dim → 返回 409 DIMENSION_CHANGE_REQUIRES_REBUILD。
+           维度变更 = chunks 全量重建，必须走"新建配置 → 重建 → 切换默认 → 停用旧配置"。
+        2. 修改后需重新通过连通性测试，未通过则不生效（返回 422，原配置保持不变）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ModelConfigInput" }
+      responses:
+        "200":
+          description: 已更新
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelConfig" }
+        "409":
+          description: 维度变更需重建（DIMENSION_CHANGE_REQUIRES_REBUILD），或该配置被引用而不可删改
+        "422":
+          description: 连通性测试未通过，修改未生效（MODEL_TEST_FAILED）
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+    delete:
+      tags: [admin]
+      summary: 停用/删除模型配置（V1）
+      description: |
+        默认是**停用**（enabled=false）而不是物理删除；传 ?hard=true 才物理删除，
+        且仅当没有任何 kb 或 fallback_of 引用它时才允许（否则 409 MODEL_IN_USE）。
+        理由：配置被删掉后，历史 query_logs.model_used 就失去了可解释性。
+      parameters:
+        - name: hard
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        "204": { description: 已停用或已删除 }
+        "409":
+          description: 仍被引用（MODEL_IN_USE），需先解除引用
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/admin/stats:
+    get:
+      tags: [admin]
+      summary: 指标统计（QPS、延迟、成本、拒答率）
+      parameters:
+        - name: window
+          in: query
+          schema: { type: string, enum: [1h, 24h, 7d], default: 24h }
+      responses:
+        "200":
+          description: 指标
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Stats" }
+
+  /api/v1/admin/gaps:
+    get:
+      tags: [admin]
+      summary: 答不出来的问题排行（知识库缺口）
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+      responses:
+        "200":
+          description: 缺口列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    question: { type: string }
+                    ask_count: { type: integer }
+                    last_asked_at: { type: string, format: date-time }
+                    suggested_action: { type: string }
+
+  /api/v1/admin/audit-logs:
+    get:
+      tags: [admin]
+      summary: 审计日志查询（只读，日志本身不可修改）
+      parameters:
+        - name: actor
+          in: query
+          schema: { type: string }
+        - name: action
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: 日志列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AuditLog" }
+
+  /api/v1/admin/degrade:
+    post:
+      tags: [admin]
+      summary: 全局降级开关（故障或预满时的急救阀门）
+      description: |
+        enabled=true 时：
+          - 全站不再调用生成模型，只返回检索片段
+          - 响应中 degraded=true
+        这是故障场景下的第一手段，必须能在 10 秒内生效。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+                reason: { type: string, maxLength: 200 }
+      responses:
+        "200":
+          description: 当前状态
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  degraded: { type: boolean }
+                  effective_at: { type: string, format: date-time }
+
+  # ─────────────────────────────────────────────────────────────────────
+  # 评估平台（V1）— 详见 docs/api-contract.md 5.6 与 evals/attribution.md
+  # 铁律：题目本体是文件（MinIO + Git），这里只做元数据、运行与结果。
+  #       attribution_confirmed 只能由人工写入，任何接口都不得代填。
+  # ─────────────────────────────────────────────────────────────────────
+  /api/v1/eval/datasets:
+    get:
+      tags: [eval]
+      summary: 评估数据集列表（含四类分布、标签统计、未确认条目数）
+      parameters:
+        - name: state
+          in: query
+          schema: { type: string, enum: [draft, active, archived] }
+      responses:
+        "200":
+          description: 数据集列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/EvalDataset" }
+    post:
+      tags: [eval]
+      summary: 注册一份评估数据集（上传 jsonl/csv 或指向已入库的 yaml）
+      description: |
+        服务端解析文件后回填 item_count / distribution / tag_stats / unconfirmed_count。
+        **unconfirmed_count > 0 的新数据集一律以 state=draft 落库**，
+        不允许直接注册为 active —— 标准答案未经人工确认的数据集不得参与门禁。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [name, version, file]
+              properties:
+                name: { type: string, maxLength: 64 }
+                version: { type: string, example: 1.0.0 }
+                file_format: { type: string, enum: [yaml, jsonl, csv], default: csv }
+                file: { type: string, format: binary }
+                source: { type: string, enum: [manual, online_badcase, eval_failure], default: manual }
+      responses:
+        "201":
+          description: 已注册（state 可能为 draft）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvalDataset" }
+        "422":
+          description: 文件格式错误 / 缺少必填字段 / 条目无 id / 类别不在枚举内（DATASET_INVALID）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/eval/datasets/{dataset_id}:
+    get:
+      tags: [eval]
+      summary: 数据集详情（含前 20 条预览与 checksum）
+      parameters:
+        - { name: dataset_id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: 详情
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/EvalDataset"
+                  - type: object
+                    properties:
+                      preview:
+                        type: array
+                        items: { $ref: "#/components/schemas/EvalItem" }
+
+  /api/v1/eval/datasets/{dataset_id}/items:
+    get:
+      tags: [eval]
+      summary: 数据集条目列表（可预览、按类别/标签/确认状态筛选）
+      parameters:
+        - { name: dataset_id, in: path, required: true, schema: { type: integer } }
+        - { name: category, in: query, schema: { type: string, enum: [normal, refuse, permission, edge] } }
+        - { name: tag, in: query, schema: { type: string } }
+        - { name: confirmed, in: query, schema: { type: boolean }, description: 标准答案是否已人工确认 }
+        - { name: q, in: query, schema: { type: string }, description: 题干关键词 }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        "200":
+          description: 分页条目
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/EvalItem" }
+                  total: { type: integer }
+                  page: { type: integer }
+                  page_size: { type: integer }
+
+  /api/v1/eval/runs:
+    get:
+      tags: [eval]
+      summary: 评估运行历史（含指标、配置快照摘要、是否基线）
+      parameters:
+        - { name: dataset_id, in: query, schema: { type: integer } }
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        "200":
+          description: 运行列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/EvalRun" }
+    post:
+      tags: [eval]
+      summary: 新建评估任务（异步，立即返回 run_id）
+      description: |
+        V1 的配置来源于配置文件与默认模型（**没有"策略 × 模型"任意组合的选择器**，那是 V2）。
+        服务端要做三件事，缺一不可：
+          ① 校验 dataset.checksum 与文件一致，不一致返回 409（STALE_DATASET）；
+          ② 校验 dataset.state=active 且 unconfirmed_count=0；
+          ③ 冻结 config_snapshot 与 git_commit 后入队。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dataset_id]
+              properties:
+                dataset_id: { type: integer }
+                baseline_of: { type: integer, nullable: true, description: 要与哪次运行对比 }
+                note: { type: string, maxLength: 200 }
+      responses:
+        "202":
+          description: 已入队
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: integer }
+                  status: { type: string, enum: [pending, running] }
+        "409":
+          description: 数据集 checksum 与实际文件不一致（STALE_DATASET）/ 数据集未 active
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/eval/runs/{run_id}:
+    get:
+      tags: [eval]
+      summary: 运行详情（指标面板数据 + 归因候选分布 + 与基线的差值）
+      parameters:
+        - { name: run_id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: 详情
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/EvalRun"
+                  - type: object
+                    properties:
+                      metrics_delta:
+                        type: object
+                        description: 相对基线的差值。若 config_snapshot 与基线不同，必须带 comparable=false
+                      comparable:
+                        type: boolean
+                        description: ★ false 表示两次运行的配置快照不同，差值不可归因
+                      confirmed_items: { type: integer }
+                      unconfirmed_items: { type: integer, description: 归因尚未人工确认的条数 }
+
+  /api/v1/eval/runs/{run_id}/items:
+    get:
+      tags: [eval]
+      summary: 逐条结果（含 vs 基线的状态变化，支撑"哪几条从通过变失败"）
+      parameters:
+        - { name: run_id, in: path, required: true, schema: { type: integer } }
+        - { name: status, in: query, schema: { type: string, enum: [pass, fail, error] } }
+        - { name: attribution_candidate, in: query, schema: { type: string } }
+        - { name: changed_only, in: query, schema: { type: boolean, default: false }, description: 只返回相对基线发生变化的条目 }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+      responses:
+        "200":
+          description: 逐条结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/EvalRunItem" }
+                  total: { type: integer }
+
+  /api/v1/eval/runs/{run_id}/export:
+    get:
+      tags: [eval]
+      summary: 导出评估报告（CSV / XLSX；**不提供服务端 PDF**）
+      description: |
+        PDF 用前端浏览器"打印成 PDF"实现，不在服务端渲染
+        （中文字体嵌入、表格换行、图表栅格化是服务端最容易出问题的三件事，
+        且对单人项目几乎没有决策价值）。见 docs/adr/0008 第六节第 5 条。
+      parameters:
+        - { name: run_id, in: path, required: true, schema: { type: integer } }
+        - name: format
+          in: query
+          schema: { type: string, enum: [csv, xlsx], default: xlsx }
+        - name: scope
+          in: query
+          schema: { type: string, enum: [summary, items, both], default: both }
+      responses:
+        "200":
+          description: 文件流
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema: { type: string, format: binary }
+
+  /api/v1/eval/runs/{run_id}/baseline:
+    post:
+      tags: [eval]
+      summary: 将某次运行设为该数据集下的基线
+      description: |
+        校验：status=done、dataset.state=active 且 unconfirmed_count=0。
+        同一数据集下只允许一个基线（数据库唯一索引兜底），
+        旧基线会被自动取消标记并记入审计日志。
+      parameters:
+        - { name: run_id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: 已设为基线
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dataset_id: { type: integer }
+                  baseline_run_id: { type: integer }
+                  previous_baseline_run_id: { type: integer, nullable: true }
+        "409":
+          description: 该运行未成功完成（RUN_NOT_DONE）
+
+  /api/v1/badcases:
+    get:
+      tags: [eval]
+      summary: BadCase 列表（**已确认的问题**，不是用户反馈流）
+      description: |
+        feedback（用户 👎）是候选，badcases 是结论，两者不合并。
+        要看待确认的反馈流，请查 feedback 相关接口。
+      parameters:
+        - { name: attribution, in: query, schema: { type: string, enum: [retrieval, generation, permission, data_gap, undetermined] } }
+        - { name: status, in: query, schema: { type: string, enum: [new, confirmed, fixing, fixed, wontfix, data_gap_wontfix] } }
+        - { name: severity, in: query, schema: { type: string, enum: [P0, P1, P2] } }
+        - { name: source, in: query, schema: { type: string, enum: [feedback, eval_run, manual] } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        "200":
+          description: 分页列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Badcase" }
+                  total: { type: integer }
+
+  /api/v1/badcases/{badcase_id}:
+    get:
+      tags: [eval]
+      summary: BadCase 详情（含 evidence：检索结果、引用、权限快照）
+      parameters:
+        - { name: badcase_id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: 详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Badcase" }
+    patch:
+      tags: [eval]
+      summary: 人工标注（确认归因、定级、标记状态、判为误报）
+      description: |
+        **这是唯一允许写入归因结论的入口。**
+        attribution 与 attribution_basis 必须成对提供 ——
+        只填结论不留依据的请求会被拒绝（ATTRIBUTION_BASIS_REQUIRED）。
+        判为误报时必须填 dismissed_reason。
+      parameters:
+        - { name: badcase_id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BadcasePatch" }
+      responses:
+        "200":
+          description: 更新后的记录
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Badcase" }
+        "422":
+          description: 缺少判定依据 / 判为误报但未填理由（ATTRIBUTION_BASIS_REQUIRED / DISMISS_REASON_REQUIRED）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/badcases/{badcase_id}/promote:
+    post:
+      tags: [eval]
+      summary: 沉淀为评估集题目（**只生成候选，不直接改动 golden_set.yaml**）
+      description: |
+        生成一条**候选题目**写入 MinIO 的 evals/pending/ 目录，
+        并回填 badcases.candidate_item_path。
+        合入 evals/golden_set.yaml 必须由人工确认标准答案后进行
+        —— 这是"标准答案必须人确认"这条铁律的唯一入口保障。
+      parameters:
+        - { name: badcase_id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                target_dataset_id: { type: integer, nullable: true, description: 目标数据集；空则进 pending 池 }
+                category: { type: string, enum: [normal, refuse, permission, edge] }
+                tags:
+                  type: array
+                  items: { type: string }
+      responses:
+        "201":
+          description: 候选题目已生成
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  badcase_id: { type: integer }
+                  candidate_item_path: { type: string }
+                  status: { type: string, enum: [pending_review] }
+
+  # ═══════════════════════════════════════════════════════════════════
+  # SQL 数据查询通道（V2）· 见 docs/text-to-sql.md
+  # 注意：核心的问答入口仍是 POST /api/v1/query（响应里多一个 sql 字段）。
+  #       这里只放"调试与查看"类接口 —— 通道本身没有独立的业务入口，
+  #       它是 /query 的一条内部分支。这是刻意的：外部有两个入口 = 两套鉴权与权限路径。
+  # ═══════════════════════════════════════════════════════════════════
+
+  /api/v1/admin/nl2sql/preview:
+    post:
+      tags: [sql]
+      summary: 预览生成的 SQL（**默认不执行**）
+      description: |
+        管理员调试用。走完整的生成 + 校验链路，返回 SQL 与校验结果，
+        **但不执行**（`dry_run=true`，默认）。
+
+        **为什么这个接口重要**：它把"生成 SQL"这个黑箱打开了。
+        排查"为什么它给了这个数字"时，这是第一个要看的接口 ——
+        比翻日志快得多，而且能直接看到校验拦在哪一步。
+
+        `dry_run=false` 时会在只读连接上执行，仍受全部五道闸门约束。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                question:
+                  type: string
+                  minLength: 1
+                  maxLength: 2000
+                dry_run:
+                  type: boolean
+                  default: true
+                  description: 默认 true（只生成与校验，不执行）
+                as_user:
+                  type: string
+                  nullable: true
+                  description: ★ 以哪个用户的权限解析范围（默认调用者自己）。用于复现"某用户看到什么"
+      responses:
+        "200":
+          description: 生成与校验结果（无论校验是否通过，都返回 200）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Nl2SqlPreview" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/admin/semantic-layer:
+    get:
+      tags: [sql]
+      summary: 查看当前生效的语义层版本与指标清单（只读）
+      description: |
+        语义层本体是**文件**（`config/semantic_layer.yaml`，走 Git），
+        这里只返回它的元信息与目录，供排查与前端展示。
+
+        改动语义层**不通过接口**，必须走 Git 提交（类型 `semantic:`）——
+        因为口径改动需要逐行 diff 与人工 review。
+      responses:
+        "200":
+          description: 语义层元信息
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SemanticLayerInfo" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/admin/nl2sql-logs:
+    get:
+      tags: [sql]
+      summary: 查询 NL2SQL 日志（含被校验拦下的 SQL）
+      description: |
+        ★ **这是排查"为什么这个数字不对"的第一站**，也是唯一能事后判断
+        "它当时生成了什么 SQL、被哪道闸门拦下、用的哪个口径"的地方。
+
+        典型用法：
+        - `?valid=false` → 看校验拦截的分布，判断语义层该补什么
+        - `?reject_reason=unknown_object` → 引出"语义层覆盖率"的待办
+        - `?channel=sql` → 看 SQL 通道的真实使用量（判断这个功能有没有人在用）
+      parameters:
+        - { name: user_id, in: query, schema: { type: integer } }
+        - { name: channel, in: query, schema: { type: string, enum: [doc, sql, hybrid] } }
+        - { name: valid, in: query, schema: { type: boolean } }
+        - { name: reject_reason, in: query, schema: { type: string } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 500 } }
+      responses:
+        "200":
+          description: 日志列表（按时间倒序）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: { type: integer }
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Nl2SqlLog" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+components:
+  securitySchemes:
+    UserHeader:
+      type: apiKey
+      in: header
+      name: X-KB-User
+      description: 仅 V0.1 演示使用，V1 必须替换为 JWT
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    KbId:
+      name: kb_id
+      in: path
+      required: true
+      schema: { type: integer }
+
+  responses:
+    BadRequest:
+      description: 参数不合法
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthenticated:
+      description: 未提供身份
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: |
+        无权访问。硬约束：响应体、日志、缓存中均不得出现任何越权文档片段（AC-05）。
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    DuplicateFile:
+      description: 文件重复（md5 相同）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    FileTooLarge:
+      description: 文件超过 20 MB
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    FileTypeUnsupported:
+      description: 文件类型不支持
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: 触发限流
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ModelUnavailable:
+      description: 所有模型均不可用（已尝试降级）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    SqlChannelUnavailable:
+      description: |
+        ★ V2。SQL 通道不可用：未启用、数据源连不上、或只读账号鉴权失败。
+        **明确不与 ModelUnavailable 合并**：前者要改模型配置，后者要修数据源连接，
+        排查动作完全不同。合并成一个错误码会让你在半夜先去看错的那一个。
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    InternalError:
+      description: 其他错误
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - UNAUTHENTICATED
+                - PERMISSION_DENIED
+                - NOT_FOUND
+                - QUESTION_INVALID
+                - FILE_TOO_LARGE
+                - FILE_TYPE_UNSUPPORTED
+                - DUPLICATE_FILE
+                - RATE_LIMITED
+                - MODEL_UNAVAILABLE
+                - INTERNAL_ERROR
+            message: { type: string }
+            detail: { type: object }
+
+    QueryResult:
+      type: object
+      required: [answer, refused, degraded, citations, latency_ms]
+      properties:
+        answer:
+          type: string
+          description: refused=true 时必须恰为固定句式
+        refused:
+          type: boolean
+          description: true 表示知识库无相关内容，已拒答
+        degraded:
+          type: boolean
+          description: true 表示处于降级模式（未调用生成模型）
+        query_log_id:
+          type: integer
+          description: 反馈接口需要用到
+        citations:
+          type: array
+          items: { $ref: "#/components/schemas/Citation" }
+        latency_ms: { type: integer }
+        retrieve_ms: { type: integer }
+        rerank_ms: { type: integer }
+        generate_ms: { type: integer }
+        cost_cny: { type: number }
+        model_used: { type: string }
+        trace_id: { type: string }
+        # ── 以下为 V2 新增（Text-to-SQL 通道）──────────────────────────
+        channel:
+          type: string
+          enum: [doc, sql, hybrid]
+          default: doc
+          description: |
+            实际走的通道。**V1 之前的历史记录一律视为 doc**（字段可空即兼容，见 R8）。
+            hybrid 表示问题同时需要文档与数据 —— 此时结果**并列展示，不融合**。
+        route_confidence:
+          type: number
+          nullable: true
+          description: 路由置信度。<0.75 时已回落 doc（该值仍会返回，便于观察路由质量）
+        channel_attempts:
+          type: array
+          items: { type: string, enum: [doc, sql] }
+          description: 尝试过的通道顺序。SQL 校验失败回落 doc 时形如 ["sql","doc"]
+        refused_reason:
+          type: string
+          nullable: true
+          enum: [doc_no_match, schema_no_match, scope_denied, unsafe_sql]
+          description: |
+            拒答的结构化原因码。**拒答句式与文档通道完全相同**（R5），
+            原因只在这里用结构化字段表达 —— 既保住统一统计，又保住排查精度。
+        sql:
+          allOf: [{ $ref: "#/components/schemas/SqlResult" }]
+          nullable: true
+          description: ★ channel=sql/hybrid 时**必须**返回，前端可折叠展示
+
+    SqlResult:
+      type: object
+      description: |
+        SQL 通道的结果。**这个对象存在的唯一目的是"可审计与可纠错"**：
+        用户能看到数字是怎么算出来的；一旦口径错了他会比你先发现。
+        **不返回 SQL 的系统，会把这唯一的纠错机会丢掉。**
+      properties:
+        text:
+          type: string
+          description: ★ 生成的 SQL 原文（**展示给用户**，可折叠）
+        params:
+          type: array
+          items: {}
+          description: 参数绑定值。SQL 里只出现占位符，禁止把值拼进字符串
+        rows:
+          type: array
+          items: { type: object }
+          description: 结果集（最多 max_rows 行）
+        columns:
+          type: array
+          items: { type: string }
+        truncated: { type: boolean, default: false }
+        semantic_layer_version:
+          type: string
+          description: ★ 当时生效的语义层版本。没有它就无法解释"同一个问题为什么数字变了"
+        scope_mode_used:
+          type: string
+          enum: [own, global]
+          description: |
+            本次聚合用的口径。
+            `own` 时**答案文案必须标注范围**（如"基于你有权访问的 N 条记录"）——
+            这是用户唯一能察觉"这不是全公司数字"的线索（AC-30）。
+        matched_metrics:
+          type: array
+          items: { type: string }
+          description: 语义层召回命中的指标名（可解释性：它以为你要问什么）
+        exec_ms: { type: integer }
+        generate_ms: { type: integer }
+        route_ms: { type: integer }
+
+    Nl2SqlPreview:
+      type: object
+      description: |
+        管理员预览结果。**校验不通过也返回 200**（这不是"错误"，
+        而是"被闸门正确拦下"）—— 与 refused 返回 200 而非 4xx 是同一类设计：
+        必须区分"看起来像错误但其实不是"和"真的失败了"。
+      properties:
+        question: { type: string }
+        channel: { type: string, enum: [doc, sql, hybrid] }
+        route_confidence: { type: number }
+        candidate_metrics:
+          type: array
+          items: { type: string }
+        valid:
+          type: boolean
+          description: 是否通过五道闸门校验
+        reject_reason:
+          type: string
+          nullable: true
+          enum: [unknown_object, denied_column, not_select, multi_statement, comment_detected, system_table, syntax_error, over_row_limit]
+        reject_detail:
+          type: string
+          nullable: true
+          description: 具体是哪个对象/哪处语法被拦（便于补语义层）
+        sql:
+          allOf: [{ $ref: "#/components/schemas/SqlResult" }]
+          nullable: true
+          description: dry_run=false 时才有 rows；dry_run=true 时 rows 为空
+        semantic_layer_version: { type: string }
+
+    Nl2SqlLog:
+      type: object
+      description: NL2SQL 日志（`nl2sql_logs` 表的一行，见 docs/data-model.md 2.15）
+      properties:
+        id: { type: integer }
+        query_log_id: { type: integer }
+        question: { type: string }
+        channel: { type: string, enum: [doc, sql, hybrid] }
+        route_confidence: { type: number, nullable: true }
+        channel_attempts:
+          type: array
+          items: { type: string }
+        semantic_layer_version: { type: string }
+        candidate_metrics:
+          type: array
+          items: { type: string }
+        generated_sql: { type: string, nullable: true }
+        valid: { type: boolean }
+        reject_reason: { type: string, nullable: true }
+        executed:
+          type: boolean
+          description: valid=false 时必须为 false（数据库 CHECK 约束保证）
+        row_count: { type: integer, nullable: true }
+        truncated: { type: boolean, nullable: true }
+        result_digest: { type: string, nullable: true }
+        scope_mode_used: { type: string, enum: [own, global], nullable: true }
+        exec_ms: { type: integer, nullable: true }
+        generate_ms: { type: integer, nullable: true }
+        cost_cny: { type: number, nullable: true }
+        trace_id: { type: string }
+        created_at: { type: string, format: date-time }
+
+    SemanticLayerInfo:
+      type: object
+      description: 语义层元信息（本体是文件，这里只返回目录与版本）
+      properties:
+        version: { type: string }
+        source:
+          type: string
+          description: 文件路径（如 config/semantic_layer.yaml）
+        git_commit: { type: string }
+        datasource_name: { type: string }
+        engine: { type: string }
+        max_rows: { type: integer }
+        statement_timeout_ms: { type: integer }
+        tables:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              title: { type: string }
+              scope_column: { type: string, nullable: true, description: ★ 行级权限列 }
+        metrics:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              table: { type: string }
+              time_column: { type: string, nullable: true }
+              scope_mode:
+                type: string
+                enum: [own, global]
+                description: ★ own 时答案必须标注聚合范围
+              unit: { type: string }
+        denylisted_columns:
+          type: array
+          items: { type: string }
+
+    Citation:
+      type: object
+      required: [index, doc_id, chunk_id, snippet]
+      properties:
+        index:
+          type: integer
+          description: 与答案中的 [1][2] 编号严格对应
+        doc_id: { type: integer }
+        doc_title: { type: string }
+        chunk_id: { type: integer }
+        char_start: { type: integer }
+        char_end: { type: integer }
+        snippet: { type: string }
+        score: { type: number }
+
+    KnowledgeBase:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        description: { type: string }
+        default_scope: { type: string }
+        doc_count: { type: integer }
+        created_at: { type: string, format: date-time }
+
+    Document:
+      type: object
+      properties:
+        id: { type: integer }
+        kb_id: { type: integer }
+        title: { type: string }
+        source_type: { type: string, enum: [txt, markdown] }
+        file_size: { type: integer }
+        status:
+          type: string
+          enum: [pending, parsing, chunking, embedding, done, failed]
+        scope: { type: string }
+        chunk_count: { type: integer }
+        error_reason:
+          type: string
+          nullable: true
+          description: 必须是给人看的话，含建议动作
+        uploaded_by: { type: string }
+        created_at: { type: string, format: date-time }
+
+    ParseTask:
+      type: object
+      properties:
+        task_id: { type: integer }
+        doc_id: { type: integer }
+        task_type: { type: string, enum: [parse, embed, eval] }
+        status: { type: string, enum: [pending, running, done, failed, canceled] }
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        retry_count: { type: integer }
+        error_reason: { type: string, nullable: true }
+
+    Stats:
+      type: object
+      properties:
+        window: { type: string }
+        qps: { type: number }
+        success_rate: { type: number }
+        latency_p50_ms: { type: integer }
+        latency_p95_ms: { type: integer }
+        refuse_rate: { type: number }
+        false_refuse_rate: { type: number }
+        total_cost_cny: { type: number }
+        budget_cny: { type: number }
+        degraded: { type: boolean }
+
+    AuditLog:
+      type: object
+      properties:
+        id: { type: integer }
+        actor: { type: string }
+        action: { type: string }
+        target: { type: string }
+        result: { type: string, enum: [success, denied, failed] }
+        detail: { type: object }
+        created_at: { type: string, format: date-time }
+
+    ModelConfig:
+      type: object
+      description: |
+        模型配置。注意 api_key_ref 返回的是"去哪儿取密钥"（环境变量名或密钥服务路径），
+        **永远不返回密钥明文**，也不存在 api_key 这个响应字段。
+      properties:
+        id: { type: integer }
+        name: { type: string, example: chat-deepseek-v3 }
+        model_type: { type: string, enum: [chat, embedding, rerank] }
+        provider:
+          type: string
+          description: 适配器名，取自 architecture.md 的 provider 适配矩阵
+          enum: [openai_compat, azure_openai, ollama, vllm, tei, dashscope, zhipu, deepseek, custom]
+        base_url: { type: string, example: "https://api.deepseek.com/v1" }
+        model_name: { type: string, example: deepseek-chat }
+        api_key_ref:
+          type: string
+          description: 环境变量名或密钥服务路径，例如 KB_LLM_KEY_DEEPSEEK；不是密钥本体
+          example: KB_LLM_KEY_DEEPSEEK
+        params: { type: object, description: 非敏感调用参数（temperature / max_tokens / timeout_s 等） }
+        extra_headers: { type: object }
+        embedding_dim:
+          type: integer
+          nullable: true
+          description: 仅 embedding 类必填；必须与 chunks.embedding 的维度一致
+        batch_limit: { type: integer, nullable: true, description: 仅 embedding / rerank 类 }
+        max_input_tokens: { type: integer, nullable: true }
+        is_default: { type: boolean, description: 每个 model_type 下最多一个为 true }
+        fallback_of: { type: integer, nullable: true, description: 指向主模型配置的 id }
+        enabled: { type: boolean }
+        health_status: { type: string, enum: [unknown, ok, degraded, down] }
+        last_checked_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ModelConfigInput:
+      type: object
+      required: [name, model_type, provider, base_url, model_name, api_key_ref]
+      properties:
+        name: { type: string, maxLength: 64 }
+        model_type: { type: string, enum: [chat, embedding, rerank] }
+        provider: { type: string, enum: [openai_compat, azure_openai, ollama, vllm, tei, dashscope, zhipu, deepseek, custom] }
+        base_url: { type: string, format: uri }
+        model_name: { type: string }
+        api_key_ref:
+          type: string
+          description: 环境变量名或密钥服务路径。**禁止直接传密钥明文**，服务端会拒绝疑似密钥的取值。
+        params: { type: object }
+        extra_headers: { type: object }
+        embedding_dim: { type: integer, nullable: true }
+        batch_limit: { type: integer, nullable: true }
+        max_input_tokens: { type: integer, nullable: true }
+        is_default: { type: boolean, default: false }
+        fallback_of: { type: integer, nullable: true }
+        enabled: { type: boolean, default: true }
+
+    # ── 评估平台（V1）──────────────────────────────────────────────────
+
+    EvalDataset:
+      type: object
+      description: |
+        评估数据集**元数据**。题目本体是文件（repo_path 在 Git、file_path 在 MinIO），
+        不通过接口逐条 CRUD —— 标准答案的修改必须能逐行 diff 并被人工 review。
+      properties:
+        id: { type: integer }
+        name: { type: string, example: golden-v1-30 }
+        version: { type: string, example: 1.0.0 }
+        channel:
+          type: string
+          enum: [doc, sql]
+          default: doc
+          description: |
+            ★ V2 新增。`doc` = 文档通道的题（原 `golden_set.yaml`）；
+            `sql` = 数据通道的题（`evals/sql/golden_set_sql.yaml`）。
+            **两条通道的指标必须分区报告**，混合在一起算平均会得到一个无意义的数。
+        repo_path: { type: string, example: evals/golden_set.yaml }
+        file_format: { type: string, enum: [yaml, jsonl, csv] }
+        checksum:
+          type: string
+          description: ★ 文件 sha256。跑评估前校验；不一致则拒绝开始（STALE_DATASET）
+        item_count: { type: integer }
+        distribution:
+          type: object
+          description: 四类分布
+          properties:
+            normal: { type: integer }
+            refuse: { type: integer }
+            permission: { type: integer }
+            edge: { type: integer }
+        tag_stats: { type: object, description: 自由标签统计 }
+        state: { type: string, enum: [draft, active, archived] }
+        unconfirmed_count:
+          type: integer
+          description: ★ 标准答案未经人工确认的条目数。> 0 时 state 只能是 draft（数据库 CHECK 约束）
+        source: { type: string, enum: [manual, online_badcase, eval_failure] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    EvalItem:
+      type: object
+      description: 评估集里的一道题（读取自数据集文件，服务端只读）
+      properties:
+        item_id: { type: string, example: Q001 }
+        question: { type: string }
+        category: { type: string, enum: [normal, refuse, permission, edge] }
+        tags: { type: array, items: { type: string } }
+        expected_answer: { type: string }
+        expected_sources: { type: array, items: { type: string } }
+        should_refuse: { type: boolean }
+        user_scope: { type: string, description: 用于越权题；提问者的权限范围 }
+        confirmed: { type: boolean, description: 标准答案是否已人工确认 }
+        notes: { type: string }
+
+    EvalRun:
+      type: object
+      properties:
+        id: { type: integer }
+        dataset_id: { type: integer }
+        git_commit:
+          type: string
+          description: ★ 跑评估时的代码版本。没有它，两次评估的数字不可比
+        config_snapshot:
+          type: object
+          description: |
+            ★ 提示词版本 / 分块参数 / 检索参数 / 重排开关 / 模型组合。
+            **V2 起还必须含 `semantic_layer_version`** —— 否则 SQL 通道的两次评估
+            不可比（改了口径的数字与没改的数字混在一起，等于两个不同的实验）。
+        model_config_ids: { type: array, items: { type: integer } }
+        status: { type: string, enum: [pending, running, done, failed, cancelled] }
+        metrics:
+          type: object
+          description: |
+            汇总指标，含 `metric_scope` 字段标明"评估口径 vs 线上口径"。
+            ★ **V2 起按 channel 分区**：`metrics.doc.*`（Recall@K / 忠实度 / 拒答率）
+            与 `metrics.sql.*`（**路由准确率 / 执行准确率 EX / SQL 侧拒答率**）分开返回。
+            **禁止把两个通道的指标相加或平均** —— 它们衡量的是完全不同的东西。
+        attribution_counts:
+          type: object
+          description: 归因**候选**分布（不等于结论分布，结论见 confirmed 相关字段）
+        cost_cny: { type: number, description: 本次评估自身的花费 }
+        total_tokens_in: { type: integer }
+        total_tokens_out: { type: integer }
+        wall_time_s: { type: integer }
+        report_path: { type: string, nullable: true }
+        is_baseline: { type: boolean }
+        baseline_of: { type: integer, nullable: true }
+        triggered_by: { type: string, enum: [manual, ci] }
+        error_reason: { type: string, nullable: true }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+
+    EvalRunItem:
+      type: object
+      properties:
+        item_id: { type: string }
+        category: { type: string, enum: [normal, refuse, permission, edge] }
+        question: { type: string }
+        status: { type: string, enum: [pass, fail, error] }
+        scores: { type: object }
+        verdict:
+          type: string
+          enum: [correct, hallucination, off_topic, wrong_number, over_refusal, under_refusal]
+        retrieval_hit:
+          type: boolean
+          description: ★ 只跑检索时，标准来源是否出现在 Top-5。归因判定的关键字段（布尔值，无猜测成分）
+        retrieved_chunk_ids: { type: array, items: { type: integer } }
+        answer: { type: string }
+        refused: { type: boolean }
+        degraded: { type: boolean }
+        latency_ms: { type: integer }
+        retrieve_ms: { type: integer }
+        generate_ms: { type: integer }
+        cost_cny: { type: number }
+        attribution_candidate:
+          type: string
+          enum: [retrieval_suspect, generation_suspect, unclassified]
+          description: 机器产出的**候选**，允许大量 unclassified
+        attribution_confirmed:
+          type: string
+          nullable: true
+          enum: [retrieval, generation, permission, data_gap, undetermined]
+          description: ★ 人工确认的**结论**。只有非空才计入统计
+        confirmed_by: { type: string, nullable: true }
+        confirmed_at: { type: string, format: date-time, nullable: true }
+        notes: { type: string }
+
+    Badcase:
+      type: object
+      description: |
+        已确认的问题（**结论**）。与 feedback（用户 👎，**候选**）刻意分成两个实体：
+        feedback 含误报，混入统计会让你开始怀疑数据、最后不再看它。
+      properties:
+        id: { type: integer }
+        source: { type: string, enum: [feedback, eval_run, manual] }
+        source_ref: { type: string }
+        kb_id: { type: integer }
+        question: { type: string }
+        answer: { type: string }
+        evidence: { type: object, description: 检索结果 + 引用 + 权限快照，复盘的全部依据 }
+        category:
+          type: string
+          enum: [hallucination, missing_recall, off_topic, wrong_number, over_refusal, permission_error, other]
+        attribution:
+          type: string
+          nullable: true
+          enum: [retrieval, generation, permission, data_gap, undetermined]
+        attribution_basis:
+          type: string
+          nullable: true
+          description: ★ 判定依据（对照跑的 retrieval_hit 值、引用核对结果）。有结论必须有依据
+        severity: { type: string, enum: [P0, P1, P2] }
+        status:
+          type: string
+          enum: [new, confirmed, fixing, fixed, wontfix, data_gap_wontfix]
+        dismissed_reason: { type: string, nullable: true, description: 判为误报时的理由 }
+        promoted_dataset_id: { type: integer, nullable: true }
+        candidate_item_path:
+          type: string
+          nullable: true
+          description: promote 生成的候选题目路径（MinIO）。需人工确认后才合入 golden_set.yaml
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    BadcasePatch:
+      type: object
+      description: |
+        attribution 与 attribution_basis **必须成对提供**；
+        只填结论不留依据的请求会被拒绝（ATTRIBUTION_BASIS_REQUIRED）。
+      properties:
+        category: { type: string, enum: [hallucination, missing_recall, off_topic, wrong_number, over_refusal, permission_error, other] }
+        attribution: { type: string, enum: [retrieval, generation, permission, data_gap, undetermined] }
+        attribution_basis: { type: string, maxLength: 500 }
+        severity: { type: string, enum: [P0, P1, P2] }
+        status: { type: string, enum: [new, confirmed, fixing, fixed, wontfix, data_gap_wontfix] }
+        dismissed_reason: { type: string, maxLength: 200 }
+
+security:
+  - UserHeader: []

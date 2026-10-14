@@ -1,0 +1,12 @@
+# ruff 配置
+target-version = "py312"  # 项目锁定 Python 3.12（AGENTS.md 技术栈）
+
+[lint]
+select = ["E", "F", "W", "UP", "B", "I"]
+
+[lint.per-file-ignores]
+# models.py 保留 Optional[...] / List[...] 旧写法：
+# ingest.py 在宿主机运行，宿主 Python 可能是 3.8（无法 eval PEP 604 注解，
+# SQLAlchemy declarative 会因 `int | None` 注解解析失败而报错）。
+# 容器内是 3.12，两种写法等价；待宿主统一升级 3.12 后可移除此豁免。
+"app/repos/models.py" = ["UP006", "UP007", "UP035", "UP045"]

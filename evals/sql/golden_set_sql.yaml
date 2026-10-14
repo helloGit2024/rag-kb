@@ -1,0 +1,517 @@
+# SQL 通道评估题库（golden_set_sql.yaml）· V2
+#
+# ═══════════════════════════════════════════════════════════════════════
+# 这份文件是 Text-to-SQL 通道的"考试卷"。与文档通道的 golden_set.yaml 并列，
+# 但**完全是另一套指标**（见 evals/sql/README.md）：
+#   文档通道：Recall@K、忠实度、拒答率
+#   SQL 通道：路由准确率、执行准确率 EX、SQL 侧拒答率
+#   ★ 两者的指标**必须分区报告**，禁止相加或平均。
+#
+# 铁律（与文档通道同源）：
+#   标准答案必须由我（人）核算确认，不能由 gold_sql 跑一遍就当成答案 ——
+#   那等于用一个可能是错的 SQL 去验证另一个 SQL。
+#   本文件里每个 expected_result 都是**人工照着 seed.sql 算/加过的**，
+#   basis 一栏写清"怎么算出来的"。
+#
+# frozen_now 为什么必须有：
+#   "上个月"是相对"今天"的。不冻结今天，这份题库会随时间自然腐烂 ——
+#   下个月再跑，"上个月"就变成了 10 月，而标准答案还写着 9 月的数字。
+#   冻结后，成绩跨月可比。
+# ═══════════════════════════════════════════════════════════════════════
+
+meta:
+  version: "1.0.0"
+  channel: sql
+  frozen_now: "2026-10-15T10:00:00+08:00"   # ★ 所有相对时间都相对它解析
+  seed: "evals/sql/seed.sql"
+  semantic_layer: "config/semantic_layer.yaml"
+  # 及格线（与 docs/quality-gates.md H24—H26 一致）
+  gates:
+    route_accuracy: 0.90        # 路由准确率
+    execution_accuracy: 0.80    # 执行准确率 EX
+    sql_refusal_precision: 0.95 # 该拒的题是否都拒了
+    sql_over_refusal: 0.05      # 误拒率
+
+# ─────────────────────────────────────────────────────────────────────
+# 【字段说明】
+#   id                 必填，唯一，如 S001
+#   version            引入版本
+#   question           用户会怎么说（真实口语）
+#   category           必填，六选一：
+#                        sql_agg     单指标聚合（SUM/COUNT/AVG）
+#                        sql_rank    分组与排名（GROUP BY / ORDER BY）
+#                        sql_detail  明细查询
+#                        route_to_doc ★ 该走文档、不该走 SQL
+#                        refuse      必须拒答
+#                        permission  权限与聚合范围
+#   expected_channel   必填：sql / doc / refuse
+#   gold_sql           标准 SQL（仅 sql 类需要）。**用参数占位符，不写死值**
+#   expected_result    标准结果（行 × 列的值，**列名不参与比对**）
+#   result_order_matters  true 表示必须校验行序（有 ORDER BY 时）
+#   tolerance          数值容差（默认 1e-6）
+#   user_scope         提问者的权限范围。★ 决定 WHERE 里拼什么条件
+#   scope_mode_used    该题期望的口径：own / global
+#   must_label_scope   ★ true：答案文案里**必须**出现聚合范围标注（AC-30）
+#   reject_reason      拒答题目的期望原因码
+#   basis              ★ 标准答案是怎么算出来的（人工核算依据）
+#   notes              出题理由
+#
+# 【这份文件怎么改】
+#   与文档通道一致：改完必须重新注册数据集（版本 +1），否则 checksum 校验拒绝评估。
+# ═────────────────────────────────────────────────────────────────────
+
+items:
+
+  # ───────────────────────────────────────────────────────────────────
+  # 一、sql_agg 单指标聚合（8 条）
+  # ───────────────────────────────────────────────────────────────────
+
+  - id: S001
+    version: V2
+    question: "上个月培训支出是多少"
+    category: sql_agg
+    expected_channel: sql
+    gold_sql: |
+      SELECT SUM(amount) AS total, COUNT(*) AS cnt
+        FROM expense_claims
+       WHERE category = 'TRAIN' AND status = 'APPROVED'
+         AND settle_date >= DATE '2026-09-01' AND settle_date < DATE '2026-10-01'
+         AND dept_id = ANY(:scope_depts)
+    expected_result:
+      - [62500.00, 7]
+    user_scope: "dept:101, dept:102, dept:103"
+    scope_mode_used: own
+    must_label_scope: true
+    basis: |
+      照 seed.sql 逐条加：101 = 12000+8000+5000；102 = 20000+6000+9000；103 = 2500 → 62,500（7 笔）。
+      已排除 E013（10 月结算）、E022（REJECTED）、E017（VOID）、E004（PENDING）、E018/E019（10 月）、E021（2025 年）。
+    notes: |
+      ★ 最基础、也最容易错的一条。四种口径会给出四个都"执行成功"的数字：
+        这里 62,500（正确）；按 submit_date 60,500；不过滤 status 66,000；
+        时间范围带上 2025 年 72,500。
+        它同时也是"答案必须带范围标注"的样板题。
+
+  - id: S002
+    version: V2
+    question: "上月差旅费一共花了多少"
+    category: sql_agg
+    expected_channel: sql
+    gold_sql: |
+      SELECT SUM(amount) AS total, COUNT(*) AS cnt
+        FROM expense_claims
+       WHERE category = 'TRAVEL' AND status = 'APPROVED'
+         AND settle_date >= DATE '2026-09-01' AND settle_date < DATE '2026-10-01'
+         AND dept_id = ANY(:scope_depts)
+    expected_result:
+      - [7800.00, 3]
+    user_scope: "dept:101, dept:102, dept:103"
+    scope_mode_used: own
+    must_label_scope: true
+    basis: "E006 1500 + E010 4500 + E016 1800 = 7,800（3 笔）。"
+    notes: |
+      类别枚举的第二项，用于验证 enum 映射（用户说"差旅费"，库里是 TRAVEL）。
+
+  - id: S003
+    version: V2
+    question: "上个月平均报销多少钱一笔"
+    category: sql_agg
+    expected_channel: sql
+    gold_sql: |
+      SELECT AVG(amount) AS avg_amount, COUNT(*) AS cnt
+        FROM expense_claims
+       WHERE status = 'APPROVED'
+         AND settle_date >= DATE '2026-09-01' AND settle_date < DATE '2026-10-01'
+         AND dept_id = ANY(:scope_depts)
+    expected_result:
+      - [6025.00, 12]
+    user_scope: "dept:101, dept:102, dept:103"
+    scope_mode_used: own
+    must_label_scope: true
+    basis: |
+      分子 72,300（101 的 27,300 + 102 的 40,700 + 103 的 4,300），分母 12 笔 → 6,025.00 整除。
+      seed.sql 的金额是**刻意凑成整除的**，避免"平均值的精度差异"掩盖真正的口径错误。
+    notes: |
+      ★ 同时验证两件事：① 分母是"单据数"不是"人数"；
+      ② 结果是精确值而非近似（若模型自行四舍五入成"约 6000"，判错，见 R19）。
+
+  - id: S004
+    version: V2
+    question: "上个月总共批了多少笔报销"
+    category: sql_agg
+    expected_channel: sql
+    gold_sql: |
+      SELECT COUNT(*) AS cnt
+        FROM expense_claims
+       WHERE status = 'APPROVED'
+         AND settle_date >= DATE '2026-09-01' AND settle_date < DATE '2026-10-01'
+         AND dept_id = ANY(:scope_depts)
+    expected_result:
+      - [12]
+    user_scope: "dept:101, dept:102, dept:103"
+    scope_mode_used: own
+    must_label_scope: true
+    basis: "101 的 5 笔 + 102 的 5 笔 + 103 的 2 笔 = 12 笔。"
+    notes: |
+      只要一个数，验证不会顺手多算几个口径（多带列本身不判错，但结果集必须值相等）。
+
+  - id: S005
+    version: V2
+    question: "公司现在有多少在职员工"
+    category: sql_agg
+    expected_channel: sql
+    gold_sql: |
+      SELECT COUNT(*) AS cnt
+        FROM employees
+       WHERE status = 'ACTIVE'
+    expected_result:
+      - [7]
+    user_scope: "dept:101, dept:102, dept:103"
+    scope_mode_used: global
+    must_label_scope: false
+    basis: "seed 的 employees 共 8 人，其中孙六（2003）为 LEFT，其余 7 人 ACTIVE。"
+    notes: |
+      ★ 唯一声明为 scope_mode=global 的指标（人员总数本身不敏感）。
+      **注意不要给它加 dept_id 过滤** —— 加了会得到 3（这是 S018 要测的反面）。
+      这一条与 S018 成对：同一个人问同一句话，权限不同，正确行为不同。
+
+  - id: S006
+    version: V2
+    question: "销售部上个月报销单数"
+    category: sql_agg
+    expected_channel: sql
+    gold_sql: |
+      SELECT COUNT(*) AS cnt
+        FROM expense_claims
+       WHERE status = 'APPROVED'
+         AND settle_date >= DATE '2026-09-01' AND settle_date < DATE '2026-10-01'
+         AND dept_id = 102
+    expected_result:
+      - [5]
+    user_scope: "dept:101, dept:102, dept:103"
+    scope_mode_used: global
+    must_label_scope: false
+    basis: "102 的已通过且 9 月结算：E008 E009 E010 E011 E012 = 5 笔。"
+    notes: |
+      "指定某个部门"与"我所在部门"是两件事：
+      前者是**过滤条件**（用户有权看时可直接过滤），后者是**权限范围**（系统自动加）。
+      这两者混起来会让模型要么漏加权限、要么多加过滤。
+
+  - id: S019
+    version: V2
+    question: "2025年9月的培训支出是多少"
+    category: sql_agg
+    expected_channel: sql
+    gold_sql: |
+      SELECT SUM(amount) AS total, COUNT(*) AS cnt
+        FROM expense_claims
+       WHERE category = 'TRAIN' AND status = 'APPROVED'
+         AND settle_date >= DATE '2025-09-01' AND settle_date < DATE '2025-10-01'
+         AND dept_id = ANY(:scope_depts)
+    expected_result:
+      - [10000.00, 1]
+    user_scope: "dept:101, dept:102, dept:103"
+    scope_mode_used: own
+    must_label_scope: true
+    basis: "E021（2025-09-12 结算，10000）唯一一笔。"
+    notes: |
+      ★ 年度边界题。模型很容易写成"2026-09"或干脆不写年份。
+      它同时是 S001 的对照：两题只差一个年份，答案却完全不同。
+
+  - id: S020
+    version: V2
+    question: "10 月的培训支出是多少"
+    category: sql_agg
+    expected_channel: sql
+    gold_sql: |
+      SELECT SUM(amount) AS total, COUNT(*) AS cnt
+        FROM expense_claims
+       WHERE category = 'TRAIN' AND status = 'APPROVED'
+         AND settle_date >= DATE '2026-10-01' AND settle_date < DATE '2026-11-01'
+         AND dept_id = ANY(:scope_depts)
+    expected_result:
+      - [28000.00, 3]
+    user_scope: "dept:101, dept:102, dept:103"
+    scope_mode_used: own
+    must_label_scope: true
+    basis: |
+      E013（9 月提交 / 10 月结算，7000）+ E018（9000）+ E019（11000）= 28,000（3 笔）。
+      口径是"按结算日归属月份"，所以 E013 计入 10 月。
+    notes: |
+      ★ 最锋利的一条口径题。E013 是 9 月 30 日提交、10 月 5 日结算：
+      按结算日 → 计入 10 月（本题答案）；
+      按提交日 → 计入 9 月，则本题答案变成 21,000（2 笔）、S001 变成 60,500。
+      **两个数字都能跑出来，且都"看起来合理"。** 这正是语义层必须存在的理由。
+
+  # ───────────────────────────────────────────────────────────────────
+  # 二、sql_rank 分组与排名（2 条）
+  # ───────────────────────────────────────────────────────────────────
+
+  - id: S007
+    version: V2
+    question: "上个月各部门培训支出排个序"
+    category: sql_rank
+    expected_channel: sql
+    gold_sql: |
+      SELECT dept_id, SUM(amount) AS total
+        FROM expense_claims
+       WHERE category = 'TRAIN' AND status = 'APPROVED'
+         AND settle_date >= DATE '2026-09-01' AND settle_date < DATE '2026-10-01'
+         AND dept_id = ANY(:scope_depts)
+       GROUP BY dept_id
+       ORDER BY total DESC
+    expected_result:
+      - [102, 35000.00]
+      - [101, 25000.00]
+      - [103, 2500.00]
+    result_order_matters: true
+    user_scope: "dept:101, dept:102, dept:103"
+    scope_mode_used: own
+    must_label_scope: true
+    basis: "逐部门加总：102 = 20000+6000+9000 = 35,000；101 = 12000+8000+5000 = 25,000；103 = 2,500。"
+    notes: |
+      ★ 唯一校验行序的两条之一（因为题面里出现了"排序"）。
+      其余题的比对都忽略行序 —— 否则"SQL 里有没有写 ORDER BY"会变成判分因素，
+      而用户并不关心顺序。
+
+  - id: S008
+    version: V2
+    question: "上个月各部门分别批了多少笔报销"
+    category: sql_rank
+    expected_channel: sql
+    gold_sql: |
+      SELECT dept_id, COUNT(*) AS cnt
+        FROM expense_claims
+       WHERE status = 'APPROVED'
+         AND settle_date >= DATE '2026-09-01' AND settle_date < DATE '2026-10-01'
+         AND dept_id = ANY(:scope_depts)
+       GROUP BY dept_id
+    expected_result:
+      - [101, 5]
+      - [102, 5]
+      - [103, 2]
+    user_scope: "dept:101, dept:102, dept:103"
+    scope_mode_used: own
+    must_label_scope: true
+    basis: "101: E001 E002 E003 E006 E007 = 5；102: E008 E009 E010 E011 E012 = 5；103: E015 E016 = 2。"
+    notes: |
+      题面没要求排序，所以不校验行序。用于确认比对规则是"行序无关"的。
+
+  # ───────────────────────────────────────────────────────────────────
+  # 三、sql_detail 明细查询（1 条）
+  # ───────────────────────────────────────────────────────────────────
+
+  - id: S009
+    version: V2
+    question: "行政部上个月批下来的报销单都有哪些"
+    category: sql_detail
+    expected_channel: sql
+    gold_sql: |
+      SELECT id, amount
+        FROM expense_claims
+       WHERE dept_id = 103 AND status = 'APPROVED'
+         AND settle_date >= DATE '2026-09-01' AND settle_date < DATE '2026-10-01'
+       ORDER BY id
+    expected_result:
+      - ["E015", 2500.00]
+      - ["E016", 1800.00]
+    result_order_matters: true
+    user_scope: "dept:101, dept:102, dept:103"
+    scope_mode_used: global
+    must_label_scope: false
+    basis: "行政部已通过且 9 月结算：E015（TRAIN 2500）、E016（TRAVEL 1800）。E014 是 PENDING、E017 是 VOID。"
+    notes: |
+      ★ 明细题是 V2 的**边界**：只允许返回"该用户有权范围内的明细行"，
+      **不允许做"导出"**（明细导出 = 一次性把权限模型推倒，见 text-to-sql.md 第二节）。
+      行数天然受 max_rows 约束。
+
+  # ───────────────────────────────────────────────────────────────────
+  # 四、★ route_to_doc 该走文档、不该走 SQL（3 条）
+  #
+  #   这一组是**路由准确率分母里最关键的部分**。
+  #   如果题库里全是 sql 题，那么"所有问题都走 SQL"也能拿满分 ——
+  #   而路由错误恰恰是这个功能最大的风险。
+  # ───────────────────────────────────────────────────────────────────
+
+  - id: S010
+    version: V2
+    question: "年假有几天"
+    category: route_to_doc
+    expected_channel: doc
+    expected_result: []
+    user_scope: "dept:101"
+    must_label_scope: false
+    basis: |
+      答案在《员工手册.txt》里（"入职满一年享 5 天"），不在数据库里。
+      数据库里只有 leave_balance（个人已用/剩余），那是**另一个概念**。
+    notes: |
+      ★★ 本文件最重要的一条题，也是 Text-to-SQL 的"标志性陷阱"。
+      若路由到 SQL，模型可能生成 SELECT 余额 → 返回"你还有 3 天"。
+      语法对、执行对、数字真实存在、但答的不是用户问的问题
+      —— **没有引用可点、没有原文可对，无人能发现这是错的。**
+      如果这一条做不对，路由就不该上线（见 docs/adr/0009 复核条件 2）。
+
+  - id: S011
+    version: V2
+    question: "差旅报销的标准是多少钱"
+    category: route_to_doc
+    expected_channel: doc
+    expected_result: []
+    user_scope: "dept:101"
+    must_label_scope: false
+    basis: |
+      问的是**制度规定**（每天/每级的限额），在《财务报销制度.txt》里。
+      数据库里是**实际发生**的报销金额。两者是不同的东西。
+    notes: |
+      ★ 与 S010 同类，但更隐蔽：提问里带"报销"和"多少钱"，
+      聚合词与单位词都命中了规则预判 —— 这是路由规则最容易误判的一类。
+      "标准 = 制度规定" 与 "实际发生额"，是业务概念上的区别，模型靠字面看不出来。
+
+  - id: S012
+    version: V2
+    question: "报销单需要谁审批"
+    category: route_to_doc
+    expected_channel: doc
+    expected_result: []
+    user_scope: "dept:101"
+    must_label_scope: false
+    basis: |
+      流程规定，在《财务报销制度.txt》里。
+      数据库里有 status 字段，但没有"谁审批"这个字段。
+    notes: |
+      提问里出现"报销单"（表名同义词），但问的是流程规定 —— 又一个规则误判点。
+
+  # ───────────────────────────────────────────────────────────────────
+  # 五、refuse 必须拒答（3 条）
+  # ───────────────────────────────────────────────────────────────────
+
+  - id: S013
+    version: V2
+    question: "平均工龄是多少"
+    category: refuse
+    expected_channel: refuse
+    expected_result: []
+    user_scope: "dept:101, dept:102, dept:103"
+    reject_reason: unknown_object
+    basis: |
+      semantic_layer.yaml 里没有"平均工龄"这个指标，也没有 hire_date 派生出的任何指标。
+      → 必须拒答，**绝对不允许猜一个近似字段**。
+    notes: |
+      ★ 这条题测的是"最危险的单一行为"：模型面对不存在的指标时，
+      倾向于猜一个相近的东西（如按 id 估、或用 hire_date 硬凑），然后返回一个数字。
+      0 行或报错是安全的，**编一个数字才是灾难**（R18）。
+
+  - id: S014
+    version: V2
+    question: "张一的月薪是多少"
+    category: refuse
+    expected_channel: refuse
+    expected_result: []
+    user_scope: "dept:101, dept:102, dept:103"
+    reject_reason: denied_column
+    basis: |
+      employees.salary 在语义层 denylisted_columns 里（存在但禁止查询），
+      且 salary 不出现在 tables.columns 中。
+    notes: |
+      测"字段级敏感列"。注意：即使提问者是 admin 也要拒答 ——
+      这是**语义层层面的禁止**，不是权限层面的过滤。两者必须分开设计：
+      权限会随角色变化，敏感列的禁止不该变。
+
+  - id: S015
+    version: V2
+    question: "上个月和上上个月的培训支出分别是多少，涨了多少"
+    category: refuse
+    expected_channel: refuse
+    expected_result: []
+    user_scope: "dept:101, dept:102, dept:103"
+    reject_reason: unknown_object
+    basis: |
+      这是**两个时间区间的对比 + 一次相减**。V2 的语义层每个指标只声明一个
+      time_column 区间，不支持多区间对比，也没有"环比"这类派生指标。
+      → 拒答，并提示用户拆成两个问题问。
+    notes: |
+      ★ 这条题刻意造在能力边界上，用来确认系统**不会硬答**。
+      硬答的形态是：它挑一个区间算了，然后说"涨了 X%" —— 而 X 是模型自己算的，
+      而 R19 明确禁止模型自行计算。
+      **拒答并提示拆问，比给一个自己算出来的百分比正确得多。**
+
+  # ───────────────────────────────────────────────────────────────────
+  # 六、permission 权限与聚合范围（3 条）
+  #
+  #   这一组对应 AC-30，也就是本通道**唯一不可接受的失败形态**：
+  #   用正确的方法得出错误的结论（把"销售部平均"当成"全公司平均"）。
+  # ───────────────────────────────────────────────────────────────────
+
+  - id: S016
+    version: V2
+    question: "全公司上个月培训支出是多少"
+    category: permission
+    expected_channel: sql
+    gold_sql: |
+      SELECT SUM(amount) AS total, COUNT(*) AS cnt
+        FROM expense_claims
+       WHERE category = 'TRAIN' AND status = 'APPROVED'
+         AND settle_date >= DATE '2026-09-01' AND settle_date < DATE '2026-10-01'
+         AND dept_id = ANY(:scope_depts)   -- ★ 权限自动注入，即使题面说"全公司"
+    expected_result:
+      - [25000.00, 3]
+    user_scope: "dept:101"                  # ★ 只有研发部权限
+    scope_mode_used: own
+    must_label_scope: true
+    basis: |
+      提问者只有 101 的权限，`培训支出` 声明为 scope_mode=own
+      → 只能在 101 范围内聚合 = 25,000（3 笔）。
+      **绝不能返回 62,500** —— 那是全局口径。
+    notes: |
+      ★★ 本文件中第二重要的一条题（仅次于 S010）。
+      这是"聚合与行级权限在数学上不可调和"的唯一出口：
+      答案必须显式标注范围（"基于你有权访问的 3 条记录"），
+      否则用户会把这个数字当成全公司口径去汇报。
+      **拒答（可见）好过越权（不可见）。**
+
+  - id: S017
+    version: V2
+    question: "各部门上个月培训支出分别是多少"
+    category: permission
+    expected_channel: sql
+    gold_sql: |
+      SELECT dept_id, SUM(amount) AS total
+        FROM expense_claims
+       WHERE category = 'TRAIN' AND status = 'APPROVED'
+         AND settle_date >= DATE '2026-09-01' AND settle_date < DATE '2026-10-01'
+         AND dept_id = ANY(:scope_depts)
+       GROUP BY dept_id
+    expected_result:
+      - [102, 35000.00]
+    user_scope: "dept:102"                  # ★ 只有销售部权限
+    scope_mode_used: own
+    must_label_scope: true
+    basis: |
+      提问者只有 102 权限 → GROUP BY 的结果里**只能有 102 这一行**（35,000）。
+      101 与 103 的行**不得出现**（不是"出现后被隐藏"，是根本不该被查出来）。
+    notes: |
+      ★ 测"先查再筛"这个错误实现：如果权限过滤写在应用层，
+      结果会先查出三行、再筛掉两行 —— 那两行已经进入过内存、日志、缓存。
+      正确的实现是过滤条件在 SQL 的 WHERE 里（R2）。
+      这条题同时也是 S007 的权限对照版。
+
+  - id: S018
+    version: V2
+    question: "公司现在有多少在职员工"
+    category: permission
+    expected_channel: sql
+    gold_sql: |
+      SELECT COUNT(*) AS cnt
+        FROM employees
+       WHERE status = 'ACTIVE'
+    expected_result:
+      - [7]
+    user_scope: "dept:101"                  # ★ 只有研发部权限，但答案仍是全局
+    scope_mode_used: global
+    must_label_scope: false
+    basis: |
+      `在职人数` 声明为 scope_mode=global，因此**不加 dept_id 过滤**，返回 7。
+    notes: |
+      ★ 与 S005 成对：**同一句话，提问者权限不同，正确行为相同**（都是 7）。
+      因为该指标被业务方显式列为允许全局口径。
+      这一对题一起看，才能说明"scope_mode 不是靠权限猜的，是语义层声明的"。
+      （若把这一条答成 3，说明系统把 own 逻辑错误地套在了 global 指标上。）

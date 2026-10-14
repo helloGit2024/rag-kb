@@ -1,0 +1,110 @@
+"""向量检索（V-1）。
+
+★ 权限过滤必须下沉到 SQL 的 WHERE 子句（AGENTS.md R2）：
+  禁止"先查 Top-20 再在 Python 里筛掉无权访问的"——越权内容会进内存，
+  且筛完候选太少会导致召回崩塌。本函数的 scope_key 条件直接写在 SQL 里。
+
+★ V-1 取舍：
+  user_scope_keys 传固定值 ["internal"]，不做真实权限隔离（真实隔离在 V0.1 T15 启用）。
+  但函数签名与 SQL 结构已就绪，后续只需把真实 scope_key 传进来即可。
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import sessionmaker
+
+
+@dataclass
+class ChunkHit:
+    """检索命中的一个块。"""
+
+    chunk_id: int
+    content: str
+    doc_id: int
+    doc_title: str
+    char_start: int
+    char_end: int
+    score: float
+
+
+def _get_engine() -> Engine:
+    """读 DATABASE_URL 建 engine。
+
+    R1：连接串（含密码）只从环境变量取，代码里不留任何硬编码 DSN 兜底。
+    本机跑测试/脚本时由 Makefile 从 .env 取值，并把 compose 服务名 postgres
+    换成 localhost——与 scripts/ingest.py 的做法保持一致。
+    """
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        raise RuntimeError(
+            "DATABASE_URL 未设置（R1：不得在代码里写死连接串）。"
+            "本机运行请用 `make test`，或先执行 `set -a && . ./.env && set +a`。"
+        )
+    return create_engine(url, pool_pre_ping=True)
+
+
+def search_chunks(
+    query_vec: list[float],
+    user_scope_keys: list[str],
+    top_k: int = 5,
+    *,
+    engine: Engine | None = None,
+) -> list[ChunkHit]:
+    """向量检索 Top-K。
+
+    Args:
+        query_vec: 查询文本的嵌入向量（1024 维）。
+        user_scope_keys: 当前用户有权访问的 scope_key 列表，如 ["internal"]。
+            ★ 权限过滤在 SQL WHERE 里完成，不在应用层过滤。
+        top_k: 返回条数。
+        engine: 可选，注入的 SQLAlchemy Engine（测试时用）。不传则读 DATABASE_URL。
+
+    Returns:
+        按相关度降序的命中列表，score = 1 - 余弦距离（越大越相关）。
+    """
+    if not user_scope_keys:
+        # R7：显式失败，不返回空列表藏问题
+        raise ValueError("user_scope_keys 不能为空，否则会检索出越权内容")
+
+    eng = engine or _get_engine()
+    SessionLocal = sessionmaker(bind=eng)
+
+    sql = text(
+        """
+        SELECT c.id, c.content, c.doc_id, d.title, c.char_start, c.char_end,
+               1 - (c.embedding <=> CAST(:query_vec AS vector)) AS score
+        FROM chunks c
+        JOIN documents d ON d.id = c.doc_id
+        WHERE c.scope_key = ANY(:scope_keys)
+        ORDER BY c.embedding <=> CAST(:query_vec AS vector)
+        LIMIT :top_k
+        """
+    )
+
+    with SessionLocal() as session:
+        rows = session.execute(
+            sql,
+            {
+                "query_vec": query_vec,
+                "scope_keys": list(user_scope_keys),
+                "top_k": top_k,
+            },
+        ).fetchall()
+
+    return [
+        ChunkHit(
+            chunk_id=r[0],
+            content=r[1],
+            doc_id=r[2],
+            doc_title=r[3],
+            char_start=r[4],
+            char_end=r[5],
+            score=float(r[6]),
+        )
+        for r in rows
+    ]

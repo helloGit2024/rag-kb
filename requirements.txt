@@ -1,0 +1,18 @@
+# ── 运行时依赖（技术栈锁定，见 AGENTS.md 第二节）──────────
+fastapi>=0.115
+uvicorn[standard]>=0.32
+psycopg[binary]>=3.2
+redis>=5.2
+sqlalchemy>=2.0
+alembic>=1.14
+pgvector>=0.3
+pydantic>=2.10
+pydantic-settings>=2.6
+# httpx：嵌入调用（T04）与 LLM 网关（T06）的统一 HTTP 客户端，
+# 同步/异步双模式 + 超时控制；标准库 urllib 无法满足 T06 的连接池与流式需求
+httpx>=0.27
+
+# ── 开发依赖 ────────────────────────────────────────────
+ruff>=0.8
+mypy>=1.13
+pytest>=8.3

@@ -1,0 +1,173 @@
+# 语义层（semantic layer）· V2 · Text-to-SQL 通道的受控词汇表
+# ═══════════════════════════════════════════════════════════════════════
+# 这份文件是 Text-to-SQL 通道的**唯一允许的表/字段/口径来源**。
+#   · 模型只能在下面声明过的对象里做选择（白名单校验的依据）
+#   · 走 Git，不进数据库 —— 口径改动需要 diff 与 review
+#   · 每个字段的含义、每个指标的口径，都是**业务知识**，不是技术知识
+#
+# 改动纪律（与 AGENTS.md R14、R16 同源）：
+#   ① 改本文件必须单独提交，类型用 semantic:
+#   ② 每次提交会自动生成新的 version（= 文件 checksum 前 12 位）
+#   ③ 评估与线上回答都会记录 version —— 否则无法解释"同一个问题为什么数字变了"
+#
+# ⚠️ 这是一份**示例**，字段名与口径全部是编的。
+#    换成真实数据源时，请逐条替换，并把 `⚙️ 待你确认` 清空。
+# ═══════════════════════════════════════════════════════════════════════
+
+version: "2026-12-01.1"          # 人读的版本号；代码用文件 checksum 兜底
+
+datasource:
+  name: hr_oa_readonly            # ⚙️ 待你确认：数据源叫什么
+  engine: postgres                # postgres | mysql | ...
+  dsn_env: SQL_CHANNEL_DSN        # ★ 只写环境变量**名**，绝不写 DSN 本体（R1）
+  statement_timeout_ms: 3000      # 单条 SQL 最长执行时间
+  max_rows: 200                   # 强制行数上限（超出静默截断并标 truncated）
+  max_metric_picks: 3             # 单次最多允许几个指标（防止问题被拆成 10 个查询）
+  # ⚙️ 待你确认：数据更新频率（决定答案里要不要标注"数据截止 T-1"）
+  data_freshness: "T+1"
+
+# ═══════════════════════════════════════════════════════════════════════
+# ① 受控词汇表：表与列
+#    模型只允许引用下面出现过的表和列。没声明的一律拒绝执行（不猜、不近似）。
+# ═══════════════════════════════════════════════════════════════════════
+
+tables:
+
+  - name: expense_claims
+    title: 报销申请单
+    synonyms: [报销, 报销单, 费用报销, 报销申请]
+    # ★ 行级权限列：权限解析时把 user_scope 翻译成 WHERE <scope_column> IN (...)
+    scope_column: dept_id
+    columns:
+      - { name: id,          type: bigint,  desc: 单据号 }
+      - { name: dept_id,     type: bigint,  desc: 申请部门 ID,
+          # ⚙️ 待你确认：dept_id 与 user_scope_grants.scope_key（如 "dept:RND"）的映射在哪
+          scope_map_ref: dept_mapping }
+      - { name: employee_id, type: bigint,  desc: 申请人 ID }
+      - { name: amount,      type: numeric, desc: 报销金额, unit: 元,
+          note: "★ 含税。若需不含税口径，必须新定义一个指标，不得在 SQL 里手动除税额" }
+      - { name: category,    type: text,    desc: 费用类别,
+          # ★ 枚举必须映射：库里存英文码，用户说中文
+          enum: { 培训费: TRAIN, 差旅费: TRAVEL, 办公费: OFFICE, 招待费: ENT, 其他: OTHER } }
+      - { name: status,      type: text,    desc: 单据状态,
+          enum: { 待审批: PENDING, 已通过: APPROVED, 已驳回: REJECTED, 已作废: VOID } }
+      - { name: submit_date, type: date,    desc: 提交日期 }
+      - { name: settle_date, type: date,    desc: 结算日期, nullable: true,
+          note: "★ 未结算的单据此列为空。按结算日的口径会漏掉未结算单据 —— 这是有意的" }
+
+  - name: employees
+    title: 员工
+    synonyms: [员工, 人员, 同事]
+    scope_column: dept_id
+    columns:
+      - { name: id,         type: bigint, desc: 员工 ID }
+      - { name: name,       type: text,   desc: 姓名, pii: true }
+      - { name: dept_id,    type: bigint, desc: 所属部门 ID }
+      - { name: hire_date,  type: date,   desc: 入职日期 }
+      - { name: job_level,  type: text,   desc: 职级,
+          enum: { P4: P4, P5: P5, P6: P6, P7: P7, P8: P8 } }
+      - { name: status,     type: text,   desc: 在职状态,
+          enum: { 在职: ACTIVE, 离职: LEFT, 试用: PROBATION } }
+
+# ═══════════════════════════════════════════════════════════════════════
+# ② 指标口径（★ 这份文件里最值钱的部分）
+#
+#    同一句提问 "上个月培训支出是多少" 可以有 4 种口径组合，
+#    产生 4 个都"正确执行"但数值不同的答案：
+#       时间字段（提交日/结算日）× 是否含税 × 单据状态 × 跨期规则
+#    → 口径**必须**写在这里，而不是留给模型猜。
+#
+#    scope_mode（★ 见 docs/text-to-sql.md 第七节）：
+#      own    —— 只允许在用户有权范围内聚合；答案文案**必须**标注范围
+#      global —— 允许全公司口径；**必须由业务方显式声明**，不得默认
+# ═══════════════════════════════════════════════════════════════════════
+
+metrics:
+
+  - name: 培训支出
+    synonyms: [培训费用, 培训花销, 培训花了多少]
+    table: expense_claims
+    sql: "SUM(amount)"
+    where: "category = 'TRAIN' AND status = 'APPROVED'"
+    time_column: settle_date        # ★ 按结算日，不是提交日
+    scope_mode: own
+    unit: 元
+    note: |
+      口径定义（示例，需你替换为真实规则）：
+      · 含税
+      · 只统计 status = APPROVED 的单据（驳回/作废不计）
+      · 按 settle_date 归属月份；未结算单据不计入任何月份
+      · 跨年单据计入结算日所在年
+
+  - name: 差旅支出
+    synonyms: [差旅费, 出差费用, 出差花了多少]
+    table: expense_claims
+    sql: "SUM(amount)"
+    where: "category = 'TRAVEL' AND status = 'APPROVED'"
+    time_column: settle_date
+    scope_mode: own
+    unit: 元
+    note: 口径同"培训支出"。
+
+  - name: 平均报销金额
+    synonyms: [人均报销, 平均报销额, 报销的平均值]
+    table: expense_claims
+    sql: "AVG(amount)"
+    where: "status = 'APPROVED'"
+    time_column: settle_date
+    scope_mode: own
+    unit: 元
+    note: |
+      分母是"单据数"而不是"人数"。若业务方要的是"人均"，
+      必须新定义一个指标（单据数 / 去重后的 employee_id 数），不得混用。
+
+  - name: 报销单数
+    synonyms: [报销笔数, 报销单量, 有多少笔报销]
+    table: expense_claims
+    sql: "COUNT(*)"
+    where: "status = 'APPROVED'"
+    time_column: settle_date
+    scope_mode: own
+    unit: 笔
+    note: 只数已通过的单据。
+
+  - name: 在职人数
+    synonyms: [公司人数, 多少人, 在职员工数]
+    table: employees
+    sql: "COUNT(*)"
+    where: "status = 'ACTIVE'"
+    time_column: null              # 时点指标，不随时间区间变化
+    scope_mode: global             # ★ 唯一允许全局口径的指标（人员总数本身不敏感）
+    unit: 人
+    note: 这是**时点快照**，不是区间累计。问"上个月在职人数"应理解为"上月末快照"。
+    # ⚙️ 待你确认：还有哪些指标允许 global？其余一律 own。
+
+# ═══════════════════════════════════════════════════════════════════════
+# ③ 时间说法 → 确定区间
+#    ★ 日期计算交给代码，不交给模型（模型会算错跨年/跨月边界）
+# ═══════════════════════════════════════════════════════════════════════
+
+time_phrases:
+  - { match: [上个月, 上月, 上一个月], resolve: last_month }
+  - { match: [本月, 这个月],          resolve: this_month }
+  - { match: [本季度, 这个季度],      resolve: this_quarter }
+  - { match: [上个季度],              resolve: last_quarter }
+  - { match: [今年, 本年度],          resolve: this_year }
+  - { match: [去年, 上一年],          resolve: last_year }
+  - { match: [近三个月, 最近三个月, 近 3 个月], resolve: last_3_months }
+  - { match: [近半年, 最近半年],      resolve: last_6_months }
+  # ⚙️ 待你确认：公司财年是不是自然年？若不是，需要单独的 fiscal_* 解析规则
+
+# ═══════════════════════════════════════════════════════════════════════
+# ④ 存在但禁止查询的列
+#    ★ 这些列即使被模型写进 SQL，也会被白名单校验拦下 → 拒答
+#    ★ 它们**不出现在 tables 的 columns 里**（对模型不可见），
+#      但仍在此处列明，便于代码做二次拦截与审计
+# ═══════════════════════════════════════════════════════════════════════
+
+denylisted_columns:
+  - employees.id_card           # 身份证号
+  - employees.bank_account      # 银行账号
+  - employees.phone             # 手机号（PII，见 security.md 4.3）
+  - employees.salary            # 薪资
+  # ⚙️ 待你确认：是否还有"字段级权限"——同一张表里，某些列只有特定角色能查
