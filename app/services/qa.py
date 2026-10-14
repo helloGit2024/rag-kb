@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 from dataclasses import dataclass
 
@@ -102,5 +103,6 @@ def _log_qa(
                 "latency_ms": retrieve_ms + generate_ms,
             },
             ensure_ascii=False,
-        )
+        ),
+        file=sys.stderr,
     )

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -112,7 +113,9 @@ def generate_answer(
         if raw != REFUSAL_TEXT:
             # 模型加了前后缀：纠偏为固定句式（可见的告警，不静默吞掉）
             print(
-                f"⚠️ 模型输出包含拒答句式以外内容，已归一为固定句式（R5）：{raw[:120]!r}"
+                "⚠️ 模型输出包含拒答句式以外内容，"
+                f"已归一为固定句式（R5）：{raw[:120]!r}",
+                file=sys.stderr,
             )
         return GeneratedAnswer(
             answer=REFUSAL_TEXT,
@@ -125,14 +128,20 @@ def generate_answer(
 
     citations = _bind_citations(raw, hits)
     if not citations:
-        print("⚠️ 答案未包含有效引用编号 [n]，无法回绑出处（可能违反了提示词规则 2）")
+        print(
+            "⚠️ 答案未包含有效引用编号 [n]，无法回绑出处（可能违反了提示词规则 2）",
+            file=sys.stderr,
+        )
 
     # R6 + rag-core「生成」规则：答案里的数字必须在被引原文中逐字出现，
     # 否则按可疑处理并拒答——改写数字比答不出来严重得多。
     # （严重度已由项目所有者确认：V-1 即按拒答处理，不降为仅告警。）
     bad = _unverifiable_numbers(raw, citations, hits)
     if bad:
-        print(f"⚠️ 答案含引用原文中找不到的数字 {bad}，按可疑处理并拒答（R6）")
+        print(
+            f"⚠️ 答案含引用原文中找不到的数字 {bad}，按可疑处理并拒答（R6）",
+            file=sys.stderr,
+        )
         return GeneratedAnswer(
             answer=REFUSAL_TEXT,
             refused=True,
@@ -176,7 +185,10 @@ def _bind_citations(answer: str, hits: list[ChunkHit]) -> list[Citation]:
         if n in bound:
             continue
         if n < 1 or n > len(hits):
-            print(f"⚠️ 答案引用了不存在的编号 [{n}]（资料只有 1..{len(hits)}），已忽略")
+            print(
+                f"⚠️ 答案引用了不存在的编号 [{n}]（资料只有 1..{len(hits)}），已忽略",
+                file=sys.stderr,
+            )
             continue
         h = hits[n - 1]
         bound[n] = Citation(

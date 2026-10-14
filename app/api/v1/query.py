@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import sys
+
 from fastapi import APIRouter
 
 from app.core.embedding import EmbeddingError
@@ -61,7 +63,10 @@ def query(req: QueryRequest) -> QueryResult:
     except GatewayError as exc:
         # 生成模型不可用：503 + MODEL_UNAVAILABLE（R7 显式失败）。
         # detail 只回传可判定的信息，不回传内网地址/密钥（R1）。
-        print(f"⚠️ 生成模型调用失败：kind={exc.kind} attempts={exc.attempts}")
+        print(
+            f"⚠️ 生成模型调用失败：kind={exc.kind} attempts={exc.attempts}",
+            file=sys.stderr,
+        )
         raise ApiError(
             503,
             "MODEL_UNAVAILABLE",
@@ -69,7 +74,7 @@ def query(req: QueryRequest) -> QueryResult:
             {"kind": exc.kind, "attempts": exc.attempts},
         ) from exc
     except EmbeddingError as exc:
-        print(f"⚠️ 嵌入模型调用失败：{exc!r}")
+        print(f"⚠️ 嵌入模型调用失败：{exc!r}", file=sys.stderr)
         raise ApiError(
             503,
             "MODEL_UNAVAILABLE",

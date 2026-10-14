@@ -5,6 +5,8 @@ V-1 骨架版路由：/healthz（存活探针）+ POST /api/v1/query（问答）
 
 from __future__ import annotations
 
+import sys
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -61,7 +63,7 @@ async def _validation_error_handler(
 @app.exception_handler(Exception)
 async def _unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
     """兜底 → 500 + INTERNAL_ERROR（R7：显式失败，返回结构化错误，不吐裸栈）。"""
-    print(f"⚠️ 未处理异常：{exc!r}")
+    print(f"⚠️ 未处理异常：{exc!r}", file=sys.stderr)
     return JSONResponse(
         status_code=500,
         content={

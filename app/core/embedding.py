@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 
 import httpx
 
@@ -113,5 +114,8 @@ def check_normalized(vectors: list[list[float]], tolerance: float = 0.01) -> flo
     norms = [math.sqrt(sum(x * x for x in vec)) for vec in vectors]
     avg = sum(norms) / len(norms)
     if abs(avg - 1.0) > tolerance:
-        print(f"⚠️ 向量未归一化（平均 norm={avg:.4f}），请确认模型输出格式")
+        print(
+            f"⚠️ 向量未归一化（平均 norm={avg:.4f}），请确认模型输出格式",
+            file=sys.stderr,
+        )
     return avg

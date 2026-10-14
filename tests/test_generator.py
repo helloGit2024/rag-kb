@@ -126,7 +126,7 @@ def test_refusal_with_extra_text_is_normalized(capsys):
     )
     assert r.refused is True
     assert r.answer == REFUSAL_TEXT  # 纠偏为唯一固定句式（R5）
-    assert "已归一为固定句式" in capsys.readouterr().out
+    assert "已归一为固定句式" in capsys.readouterr().err
 
 
 def test_empty_hits_skips_model():
@@ -144,14 +144,14 @@ def test_invalid_index_ignored(capsys):
         "年假多少天？", _hits(), transport=_mock("年假 10 天[1]，见[9]。")
     )
     assert [c.index for c in r.citations] == [1]
-    assert "不存在的编号 [9]" in capsys.readouterr().out
+    assert "不存在的编号 [9]" in capsys.readouterr().err
 
 
 def test_missing_citation_warns(capsys):
     r = generate_answer("年假多少天？", _hits(), transport=_mock("年假为 10 天。"))
     assert r.refused is False
     assert r.citations == []
-    assert "未包含有效引用编号" in capsys.readouterr().out
+    assert "未包含有效引用编号" in capsys.readouterr().err
 
 
 def test_rewritten_number_refused(capsys):
@@ -164,7 +164,7 @@ def test_rewritten_number_refused(capsys):
     assert r.refused is True
     assert r.answer == REFUSAL_TEXT
     assert r.citations == []
-    assert "找不到的数字 ['12']" in capsys.readouterr().out
+    assert "找不到的数字 ['12']" in capsys.readouterr().err
 
 
 def test_faithful_number_passes():
