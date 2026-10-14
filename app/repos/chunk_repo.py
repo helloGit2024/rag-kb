@@ -11,14 +11,14 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.repos.db import get_engine
 from app.repos.models import Chunk
 
 
@@ -35,22 +35,6 @@ class ChunkHit:
     score: float
 
 
-def _get_engine() -> Engine:
-    """读 DATABASE_URL 建 engine。
-
-    R1：连接串（含密码）只从环境变量取，代码里不留任何硬编码 DSN 兜底。
-    本机跑测试/脚本时由 Makefile 从 .env 取值，并把 compose 服务名 postgres
-    换成 localhost——与 scripts/ingest.py 的做法保持一致。
-    """
-    url = os.getenv("DATABASE_URL")
-    if not url:
-        raise RuntimeError(
-            "DATABASE_URL 未设置（R1：不得在代码里写死连接串）。"
-            "本机运行请用 `make test`，或先执行 `set -a && . ./.env && set +a`。"
-        )
-    return create_engine(url, pool_pre_ping=True)
-
-
 def search_chunks(
     query_vec: list[float],
     user_scope_keys: list[str],
@@ -62,10 +46,10 @@ def search_chunks(
 
     Args:
         query_vec: 查询文本的嵌入向量（1024 维）。
-        user_scope_keys: 当前用户有权访问的 scope_key 列表，如 ["internal"]。
+        user_scope_keys: 当前用户有权访问的 scope_key 列表（由 permission 解析得到）。
             ★ 权限过滤在 SQL WHERE 里完成，不在应用层过滤。
         top_k: 返回条数。
-        engine: 可选，注入的 SQLAlchemy Engine（测试时用）。不传则读 DATABASE_URL。
+        engine: 可选，注入的 SQLAlchemy Engine（测试时用）。不传则用 db.get_engine()。
 
     Returns:
         按相关度降序的命中列表，score = 1 - 余弦距离（越大越相关）。
@@ -74,7 +58,7 @@ def search_chunks(
         # R7：显式失败，不返回空列表藏问题
         raise ValueError("user_scope_keys 不能为空，否则会检索出越权内容")
 
-    eng = engine or _get_engine()
+    eng = engine or get_engine()
     SessionLocal = sessionmaker(bind=eng)
 
     sql = text(

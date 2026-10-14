@@ -7,13 +7,17 @@
 from __future__ import annotations
 
 import sys
+from typing import Annotated
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Header
+from sqlalchemy.orm import Session
 
 from app.core.embedding import EmbeddingError
 from app.core.llm_gateway import GatewayError
+from app.repos.db import get_session
 from app.schemas.query import CitationOut, QueryRequest, QueryResult
 from app.services import qa
+from app.services.permission import ScopeError, resolve_scope_keys
 
 
 class ApiError(Exception):
@@ -35,18 +39,42 @@ class ApiError(Exception):
 
 router = APIRouter(prefix="/api/v1", tags=["query"])
 
-# V-1 没有用户体系：固定传 ["internal"]（与种子数据、test_retrieval 一致），
-# 不做真实权限隔离。
-# ★ V0.1 T15 起改为从鉴权依赖（Depends）解析出的真实 user_scope（R2）——
-#   service/repo 的签名已就绪，届时只改这一处的取值来源。
-_V1_SCOPE_KEYS = ["internal"]
+
+def _require_user_scope_keys(
+    session: Annotated[Session, Depends(get_session)],
+    x_kb_user: Annotated[str | None, Header(alias="X-KB-User")] = None,
+) -> list[str]:
+    """从 `X-KB-User` header 解析出当前用户的可见范围集合（T15）。
+
+    V0.1 的临时身份方案（api-contract.md 3.2）：直接传用户名，V1 换 JWT。
+    ★ security.md 2.2：任何接口进入业务逻辑前必须完成"身份 → 可见范围"解析；
+      解析结果必须是**集合**。解析出的范围随后交给检索 SQL 做过滤（R2）。
+
+    Raises:
+        ApiError 401 UNAUTHENTICATED: 未提供 header / 用户不存在 / 已禁用。
+            **不兜底成某个默认账号**——默认账号 = 隐式越权入口。
+    """
+    username = (x_kb_user or "").strip()
+    if not username:
+        raise ApiError(401, "UNAUTHENTICATED", "未提供身份（缺少 X-KB-User）")
+    try:
+        return resolve_scope_keys(session, username=username)
+    except ScopeError as exc:
+        # R7：身份无法解析时显式失败；响应体不回显内部细节
+        raise ApiError(401, "UNAUTHENTICATED", "身份无效或已禁用") from exc
 
 
 @router.post("/query", response_model=QueryResult)
-def query(req: QueryRequest) -> QueryResult:
+def query(
+    req: QueryRequest,
+    scope_keys: Annotated[list[str], Depends(_require_user_scope_keys)],
+) -> QueryResult:
     """知识库问答。
 
     拒答与正常回答同为 200（拒答是正常业务结果，不是错误，见 api-data 规则第二节）。
+
+    ★ 权限：`X-KB-User` header 经 `_require_user_scope_keys` 解析成真实可见范围，
+      再传入检索链路——过滤在 SQL WHERE 内完成，不在应用层筛（R2）。
 
     ★ 关于 R10「在线请求不得超过 3 秒」：本接口是**同步**的，本地 7B 模型单次生成
     实测 14—26s，确实超过 3 秒。这里刻意如此——R10 约束的是**离线的重活**
@@ -58,7 +86,7 @@ def query(req: QueryRequest) -> QueryResult:
     """
     try:
         result = qa.answer_question(
-            req.question, top_k=req.top_k, user_scope_keys=_V1_SCOPE_KEYS
+            req.question, top_k=req.top_k, user_scope_keys=scope_keys
         )
     except GatewayError as exc:
         # 生成模型不可用：503 + MODEL_UNAVAILABLE（R7 显式失败）。

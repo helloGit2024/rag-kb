@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.v1.query import _require_user_scope_keys
 from app.core.llm_gateway import GatewayError
 from app.main import app
 from app.repos.chunk_repo import ChunkHit
@@ -16,6 +17,13 @@ from app.services import qa
 from app.services.generator import REFUSAL_TEXT, Citation, GeneratedAnswer
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _clear_dependency_overrides():
+    """每个用例后清空依赖覆盖，避免相互污染（401 用例需要跑真实依赖）。"""
+    yield
+    app.dependency_overrides.clear()
 
 
 def _hit() -> ChunkHit:
@@ -31,7 +39,11 @@ def _hit() -> ChunkHit:
 
 
 def _patch(monkeypatch, gen) -> None:
-    """把 qa 依赖的三步全部替换为假实现（module 级 patching）。"""
+    """把 qa 依赖的三步全部替换为假实现，并把鉴权依赖固定为 ["internal"]。
+
+    T15 起 /query 需要 `X-KB-User` 解析权限；本文件是纯接口层测试（不连库），
+    故用 dependency_overrides 让鉴权直接返回固定范围，绕开数据库。
+    """
 
     def fake_embed(texts, **kwargs):
         return [[0.0] * 1024 for _ in texts]
@@ -39,6 +51,7 @@ def _patch(monkeypatch, gen) -> None:
     def fake_search(query_vec, scope_keys, top_k=5, **kwargs):
         return [_hit()]
 
+    app.dependency_overrides[_require_user_scope_keys] = lambda: ["internal"]
     monkeypatch.setattr(qa, "embed_texts", fake_embed)
     monkeypatch.setattr(qa, "search_chunks", fake_search)
     monkeypatch.setattr(qa, "generate_answer", gen)
@@ -116,6 +129,8 @@ def test_invalid_question_400_without_model_call(monkeypatch, question):
     def boom(*args, **kwargs):
         raise AssertionError("参数校验必须在调用嵌入/检索/生成之前失败")
 
+    # 鉴权依赖先放行（否则缺失 header 会先返回 401，掩盖参数校验路径）
+    app.dependency_overrides[_require_user_scope_keys] = lambda: ["internal"]
     monkeypatch.setattr(qa, "embed_texts", boom)
     monkeypatch.setattr(qa, "search_chunks", boom)
     monkeypatch.setattr(qa, "generate_answer", boom)
@@ -124,6 +139,17 @@ def test_invalid_question_400_without_model_call(monkeypatch, question):
 
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "QUESTION_INVALID"
+
+
+def test_missing_user_header_returns_401():
+    """T15：未提供 X-KB-User → 401 UNAUTHENTICATED（security.md 2.2）。
+
+    本用例不覆盖鉴权依赖，走真实依赖；缺 header 时在查库前即显式失败（R7）。
+    """
+    resp = client.post("/api/v1/query", json={"question": "年假多少天"})
+
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "UNAUTHENTICATED"
 
 
 def test_gateway_error_maps_to_503(monkeypatch):

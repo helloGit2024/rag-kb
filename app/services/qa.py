@@ -64,7 +64,7 @@ def answer_question(
     retrieve_ms = round((t1 - t0) * 1000)
     generate_ms = round((t2 - t1) * 1000)
 
-    _log_qa(question, hits, gen, retrieve_ms, generate_ms)
+    _log_qa(question, hits, gen, retrieve_ms, generate_ms, user_scope_keys)
 
     return QaResult(
         answer=gen.answer,
@@ -82,18 +82,22 @@ def _log_qa(
     gen,
     retrieve_ms: int,
     generate_ms: int,
+    scope_keys: list[str],
 ) -> None:
     """落一行结构化问答记录。
 
     rag-core「生成」规则要求每条问答都有结构化记录；V-1 还没有 query_logs 表
     （T02 只建了 documents/chunks），因此先打印一行 JSON，落表留到 V0.1 T32/T33。
     只记 chunk_id 不记块文本——避免把全文文档内容写入日志（api-data 规则第五节）。
+    ★ T15 起把**当时生效的可见范围**（scope_keys）一并记入：security.md 2.2 要求
+      每次问答都能事后定位"当时他到底能看到什么"（未来落进 query_logs.scope_snapshot）。
     """
     print(
         json.dumps(
             {
                 "event": "qa",
                 "question": question,
+                "scope_keys": list(scope_keys),
                 "retrieved_chunk_ids": [h.chunk_id for h in hits],
                 "cited_chunk_ids": [c.chunk_id for c in gen.citations],
                 "refused": gen.refused,
