@@ -150,3 +150,27 @@ def raw_key(doc_uuid: str, ext: str) -> str:
 def parsed_key(doc_uuid: str) -> str:
     """解析后文本对象 key：`docs/{doc_uuid}/parsed.txt`。"""
     return f"docs/{doc_uuid}/parsed.txt"
+
+
+def delete_prefix(
+    prefix: str,
+    *,
+    client: Minio | None = None,
+    config: StorageConfig | None = None,
+) -> int:
+    """删除某前缀下的全部对象，返回删除的对象数。
+
+    用途：入库事务提交失败时的**补偿**——对象已写进存储但 DB 行没落成，
+    不清理就会留下"指向不存在文档"的孤儿对象。
+    silo/MinIO 没有按前缀删除的接口，只能列出后逐个删；一个文档前缀下对象很少，
+    量级完全可接受（V1 的文档删除全链路清理 T47 会复用本函数）。
+
+    ★ 前缀下没有任何对象时返回 0、不报错：补偿路径必须幂等。
+    """
+    config = config or load_config()
+    client = client or get_client(config)
+    removed = 0
+    for obj in client.list_objects(config.bucket, prefix=prefix, recursive=True):
+        client.remove_object(config.bucket, obj.object_name)
+        removed += 1
+    return removed

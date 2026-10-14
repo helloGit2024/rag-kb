@@ -1,7 +1,7 @@
-"""documents 表数据访问（V0.1 · T12）。
+"""documents 表数据访问（V0.1 · T12 / T13）。
 
 ★ app/repos/ 是唯一允许出现 SQL 的层（目录约定）。
-本模块目前只提供 md5 去重查询；文档 CRUD 在 T21 / T22 扩展。
+本模块提供 md5 去重查询（T12）与文档插入（T13）；其余文档 CRUD 在 T21 / T22 扩展。
 """
 
 from __future__ import annotations
@@ -26,3 +26,40 @@ def find_active_by_md5(session: Session, *, kb_id: int, file_md5: str) -> int | 
         )
     ).first()
     return row[0] if row else None
+
+
+def insert_document(
+    session: Session,
+    *,
+    kb_id: int,
+    title: str,
+    source_type: str,
+    storage_key: str,
+    parsed_key: str,
+    file_md5: str,
+    file_size: int,
+    scope: str,
+    status: str,
+) -> int:
+    """插入一条 documents 记录并 flush（拿到自增 id），返回新文档 id。
+
+    ★ 不 commit：事务边界由调用方（ingest 编排）统一控制——
+    documents 与 chunks 必须同生共死，绝不能各自提交（T13 验收"中途失败能回滚"）。
+
+    ★ status 由调用方显式传入、不给默认值：写状态是编排层的决定，
+    T13 只在整条链路成功时传 "done"，状态机推进属 T19。
+    """
+    doc = Document(
+        kb_id=kb_id,
+        title=title,
+        source_type=source_type,
+        storage_key=storage_key,
+        parsed_key=parsed_key,
+        file_md5=file_md5,
+        file_size=file_size,
+        status=status,
+        scope=scope,
+    )
+    session.add(doc)
+    session.flush()
+    return doc.id

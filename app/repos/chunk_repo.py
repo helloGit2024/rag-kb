@@ -1,4 +1,4 @@
-"""向量检索（V-1）。
+"""chunks 表数据访问：检索（V-1）与批量写入（V0.1 · T13）。
 
 ★ 权限过滤必须下沉到 SQL 的 WHERE 子句（AGENTS.md R2）：
   禁止"先查 Top-20 再在 Python 里筛掉无权访问的"——越权内容会进内存，
@@ -12,11 +12,14 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.repos.models import Chunk
 
 
 @dataclass
@@ -108,3 +111,49 @@ def search_chunks(
         )
         for r in rows
     ]
+
+
+@dataclass(frozen=True)
+class ChunkInsert:
+    """待写入的一个块。
+
+    doc_id / kb_id / scope_key 是整批共用的，不放这里——避免每行重复携带。
+    """
+
+    content: str
+    chunk_index: int
+    char_start: int
+    char_end: int
+    embedding: list[float]
+
+
+def insert_chunks(
+    session: Session,
+    *,
+    doc_id: int,
+    kb_id: int,
+    scope_key: str,
+    items: Sequence[ChunkInsert],
+) -> int:
+    """批量插入 chunks，返回写入条数。
+
+    ★ 不 commit（与 insert_document 同一约定）：事务边界由 ingest 编排控制。
+    ★ scope_key 与 embedding 写进同一行：检索时的权限过滤才能在一条 SQL 里完成（R2）。
+    """
+    session.add_all(
+        [
+            Chunk(
+                doc_id=doc_id,
+                kb_id=kb_id,
+                chunk_index=item.chunk_index,
+                content=item.content,
+                char_start=item.char_start,
+                char_end=item.char_end,
+                embedding=item.embedding,
+                scope_key=scope_key,
+            )
+            for item in items
+        ]
+    )
+    session.flush()
+    return len(items)
