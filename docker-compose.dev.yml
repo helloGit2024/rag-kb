@@ -86,6 +86,13 @@ services:
       - ./app:/app/app
       - ./alembic:/app/alembic
       - ./alembic.ini:/app/alembic.ini
+    # 开发专用：热重载。这里覆盖 Dockerfile 的 CMD —— 生产镜像的 CMD 不带 --reload，
+    # 不受影响。app/ 已挂载，改宿主代码即触发重载，不必 restart 容器。
+    # --reload-dir 只监听 /app/app（默认监听整个 /app）：改 alembic/ 下文件不会
+    # 无谓地重启服务（迁移由 alembic 命令自身重新执行，不需要重启进程）。
+    command: >-
+      uvicorn app.main:app --host 0.0.0.0 --port 8000
+      --reload --reload-dir /app/app
     depends_on:
       postgres:
         condition: service_healthy
