@@ -38,6 +38,10 @@ services:
       # Ollama 跑在宿主机：容器内 localhost 不是宿主机，
       # 必须用 host.docker.internal（macOS Docker Desktop 自动解析）
       LLM_BASE_URL: http://host.docker.internal:11434/v1
+      # 嵌入服务（bge-m3）也跑在宿主机 Ollama，同上用 host.docker.internal。
+      # embedding.py 读 OLLAMA_BASE_URL；不配则回退到容器内 localhost，
+      # 容器里那是它自己（不是宿主 Ollama），嵌入调用会失败。
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
       LLM_MODEL: ${LLM_MODEL}
       LLM_API_KEY: ${LLM_API_KEY}
     depends_on:
