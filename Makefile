@@ -35,6 +35,8 @@ test:  ## 跑全部测试
 	@set -a; . ./.env; set +a; \
 	DATABASE_URL=$$(printf '%s' "$$DATABASE_URL" | sed 's/@postgres:/@localhost:/'); \
 	export DATABASE_URL; \
+	MINIO_ENDPOINT=$$(printf '%s' "$$MINIO_ENDPOINT" | sed 's|://silo:|://localhost:|'); \
+	export MINIO_ENDPOINT; \
 	PYTHONPATH=. pytest -q
 
 lint:  ## 检查代码规范与类型错误

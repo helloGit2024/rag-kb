@@ -27,6 +27,30 @@ services:
       timeout: 3s
       retries: 10
 
+  # 对象存储：silo（MinIO 社区延续，S3 兼容）。
+  # 为什么不是 minio/minio：官方镜像已于 2025-10 下架、2026-02 仓库归档，
+  # Docker Hub 返回 404、quay.io 返回 401。silo 命令与接口一致，只换镜像。
+  # 详见 docs/adr/0010。
+  silo:
+    image: pgsty/silo:RELEASE.2026-08-06T00-00-00Z
+    container_name: ragkb-silo
+    # 9001 固定为控制台端口；不指定会随机分配，无法从宿主机访问
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "${MINIO_API_PORT}:9000"
+      - "${MINIO_CONSOLE_PORT}:9001"
+    volumes:
+      - silodata:/data
+    healthcheck:
+      # silo 自带 healthcheck 子命令（容器内已实测 exit 0），不依赖 curl
+      test: ["CMD", "silo", "healthcheck", "live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   backend:
     build: .
     container_name: ragkb-backend
@@ -47,11 +71,19 @@ services:
       EMBEDDING_DIM: ${EMBEDDING_DIM}
       LLM_MODEL: ${LLM_MODEL}
       LLM_API_KEY: ${LLM_API_KEY}
+      # 对象存储（silo）：容器内用 compose 服务名 silo，宿主脚本会替换为 localhost
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      silo:
+        condition: service_healthy
 
 volumes:
   pgdata:
+  silodata:
