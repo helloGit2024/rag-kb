@@ -42,6 +42,9 @@ services:
       # embedding.py 读 OLLAMA_BASE_URL；不配则回退到容器内 localhost，
       # 容器里那是它自己（不是宿主 Ollama），嵌入调用会失败。
       OLLAMA_BASE_URL: http://host.docker.internal:11434
+      # 显式传入嵌入模型与维度（值与 embedding.py 默认一致，但不靠隐式默认）
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL}
+      EMBEDDING_DIM: ${EMBEDDING_DIM}
       LLM_MODEL: ${LLM_MODEL}
       LLM_API_KEY: ${LLM_API_KEY}
     depends_on:
