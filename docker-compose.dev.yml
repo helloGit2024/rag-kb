@@ -76,6 +76,16 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET}
+    # ★ 开发模式：把宿主源码/迁移挂进容器。否则容器里跑的是"构建时的代码快照"，
+    #   新增或修改的文件（如 alembic/versions/0002_*.py）容器内看不到，
+    #   `make migrate` 会一直停在旧 revision（必须 --build 才能生效，极易误判）。
+    #   生产镜像不受影响：仍由 Dockerfile 的 COPY 打进镜像。
+    #   只挂这三项（都是 Dockerfile COPY 的代码/配置），不挂整个项目根，
+    #   以免把 .env / .venv / tests 暴露进容器。
+    volumes:
+      - ./app:/app/app
+      - ./alembic:/app/alembic
+      - ./alembic.ini:/app/alembic.ini
     depends_on:
       postgres:
         condition: service_healthy
