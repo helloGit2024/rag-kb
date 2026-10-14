@@ -86,7 +86,7 @@ def query(
     """
     try:
         result = qa.answer_question(
-            req.question, top_k=req.top_k, user_scope_keys=scope_keys
+            req.question, top_k=req.top_k, scope_keys=scope_keys
         )
     except GatewayError as exc:
         # 生成模型不可用：503 + MODEL_UNAVAILABLE（R7 显式失败）。

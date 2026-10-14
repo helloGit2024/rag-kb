@@ -5,7 +5,7 @@
   且筛完候选太少会导致召回崩塌。本函数的 scope_key 条件直接写在 SQL 里。
 
 ★ V-1 取舍：
-  user_scope_keys 传固定值 ["internal"]，不做真实权限隔离（真实隔离在 V0.1 T15 启用）。
+  scope_keys 传固定值 ["internal"]，不做真实权限隔离（真实隔离在 V0.1 T15 启用）。
   但函数签名与 SQL 结构已就绪，后续只需把真实 scope_key 传进来即可。
 """
 
@@ -37,7 +37,7 @@ class ChunkHit:
 
 def search_chunks(
     query_vec: list[float],
-    user_scope_keys: list[str],
+    scope_keys: list[str],
     top_k: int = 5,
     *,
     engine: Engine | None = None,
@@ -46,7 +46,7 @@ def search_chunks(
 
     Args:
         query_vec: 查询文本的嵌入向量（1024 维）。
-        user_scope_keys: 当前用户有权访问的 scope_key 列表（由 permission 解析得到）。
+        scope_keys: 当前用户有权访问的 scope_key 列表（由 permission 解析得到）。
             ★ 权限过滤在 SQL WHERE 里完成，不在应用层过滤。
         top_k: 返回条数。
         engine: 可选，注入的 SQLAlchemy Engine（测试时用）。不传则用 db.get_engine()。
@@ -54,9 +54,9 @@ def search_chunks(
     Returns:
         按相关度降序的命中列表，score = 1 - 余弦距离（越大越相关）。
     """
-    if not user_scope_keys:
+    if not scope_keys:
         # R7：显式失败，不返回空列表藏问题
-        raise ValueError("user_scope_keys 不能为空，否则会检索出越权内容")
+        raise ValueError("scope_keys 不能为空，否则会检索出越权内容")
 
     eng = engine or get_engine()
     SessionLocal = sessionmaker(bind=eng)
@@ -78,7 +78,7 @@ def search_chunks(
             sql,
             {
                 "query_vec": query_vec,
-                "scope_keys": list(user_scope_keys),
+                "scope_keys": list(scope_keys),
                 "top_k": top_k,
             },
         ).fetchall()

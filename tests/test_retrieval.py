@@ -64,5 +64,5 @@ class TestRetrieval:
 
     def test_empty_scope_raises(self):
         """空 scope_key 列表应抛异常（R7：显式失败，不静默返回空）。"""
-        with pytest.raises(ValueError, match="user_scope_keys 不能为空"):
+        with pytest.raises(ValueError, match="scope_keys 不能为空"):
             search_chunks([0.0] * 1024, [], top_k=5)

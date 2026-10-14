@@ -12,7 +12,7 @@
   · 拒答：stdout 恰好只有固定拒答句一行，退出码 0；
   · 正常：stdout 打印答案 + 「引用：」区块，退出码 0；
   · 模型/嵌入不可用：诊断走 stderr，退出码非 0。
-- user_scope_keys V-1 固定 ["internal"]，真实权限在 V0.1 T15 启用。
+- scope_keys V-1 固定 ["internal"]，真实权限在 V0.1 T15 启用。
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ def main() -> int:
     # qa/generator 的诊断与告警统一走 stderr，stdout 只承载答案
     try:
         result = answer_question(
-            args.question, top_k=args.top_k, user_scope_keys=["internal"]
+            args.question, top_k=args.top_k, scope_keys=["internal"]
         )
     except (EmbeddingError, GatewayError) as exc:
         # 模型/嵌入不可用：显式失败（R7），诊断走 stderr，非零退出

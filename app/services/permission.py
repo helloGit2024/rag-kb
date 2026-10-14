@@ -10,7 +10,7 @@
   并解析 `X-KB-User` header、无权时返回 403（security.md 2.2）。本模块不碰 HTTP。
 
 ★ 为什么 kb 可见性不折进 scope_key：data-model 第三节给出的**正确写法**是
-  `WHERE c.scope_key = ANY(:user_scope_keys) AND c.kb_id = ANY(:accessible_kb_ids)`
+  `WHERE c.scope_key = ANY(:scope_keys) AND c.kb_id = ANY(:accessible_kb_ids)`
   —— 两个独立条件。所以 `scope_key` 只表达"文档的可见级别 / 部门"，
   知识库维度由 `kb_id` 承载。（已与项目所有者确认）
 
