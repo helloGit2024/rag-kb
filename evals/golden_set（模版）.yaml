@@ -39,7 +39,7 @@
 #   expected_answer   标准答案（**必须经我人工确认**）
 #   expected_sources  标准来源文档名（Recall@K 的判定依据）
 #   should_refuse     该题系统该不该拒答（refuse 类必须为 true）
-#   user_scope        权限类题目用：提问者的权限范围
+#   scope_keys        权限类题目用：该题设定的提问者可见范围（逗号分隔可写多个）
 #   notes             出题理由
 #
 # 【这份文件怎么改】
@@ -66,7 +66,7 @@
   expected_sources:
     - "员工手册.txt#年假章节"
   should_refuse: false
-  user_scope: "public"
+  scope_keys: "public"
   notes: "最高频的制度查询；同时用于观察'列举型问题是否会被分块切散'"
 
 - id: Q002
@@ -81,7 +81,7 @@
   expected_sources:
     - "员工手册.txt#请假管理"
   should_refuse: false
-  user_scope: "public"
+  scope_keys: "public"
   notes: "考'文档未规定的部分不能补'"
 
 - id: Q003
@@ -96,7 +96,7 @@
   expected_sources:
     - "员工手册.txt#考勤管理"
   should_refuse: false
-  user_scope: "public"
+  scope_keys: "public"
   notes: ""
 
 - id: Q004
@@ -110,7 +110,7 @@
   expected_sources:
     - "员工手册.txt#离职管理"
   should_refuse: false
-  user_scope: "public"
+  scope_keys: "public"
   notes: ""
 
 - id: Q005
@@ -124,7 +124,7 @@
   expected_sources:
     - "员工手册.txt#入职与试用"
   should_refuse: false
-  user_scope: "public"
+  scope_keys: "public"
   notes: ""
 
 - id: Q006
@@ -139,7 +139,7 @@
   expected_sources:
     - "员工手册.txt#加班与调休"
   should_refuse: false
-  user_scope: "public"
+  scope_keys: "public"
   notes: ""
 
 - id: Q007
@@ -156,7 +156,7 @@
   expected_sources:
     - "财务报销制度.txt#报销时限"
   should_refuse: false
-  user_scope: "internal"
+  scope_keys: "internal"
   notes: "★ 文档与执行不一致的典型案例，用于观察系统是否会自行'纠正'文档"
 
 - id: Q008
@@ -171,7 +171,7 @@
   expected_sources:
     - "财务报销制度.txt#差旅标准"
   should_refuse: false
-  user_scope: "internal"
+  scope_keys: "internal"
   notes: "数字精确性；与 Q030 配对使用"
 
 - id: Q009
@@ -187,7 +187,7 @@
   expected_sources:
     - "财务报销制度.txt#报销流程"
   should_refuse: false
-  user_scope: "internal"
+  scope_keys: "internal"
   notes: "★ 列举型问题，用于检测'步骤被分块切散导致答案不完整'"
 
 - id: Q010
@@ -202,7 +202,7 @@
   expected_sources:
     - "财务报销制度.txt#票据要求"
   should_refuse: false
-  user_scope: "internal"
+  scope_keys: "internal"
   notes: ""
 
 - id: Q011
@@ -217,7 +217,7 @@
   expected_sources:
     - "信息安全管理制度.txt#账号与口令"
   should_refuse: false
-  user_scope: "internal"
+  scope_keys: "internal"
   notes: "数字精确性"
 
 - id: Q012
@@ -235,7 +235,7 @@
   expected_sources:
     - "信息安全管理制度.txt#数据分级"
   should_refuse: false
-  user_scope: "internal"
+  scope_keys: "internal"
   notes: "★ 用于检测系统是否会把'数据分级'与'文档密级'混为一谈"
 
 - id: Q013
@@ -250,7 +250,7 @@
   expected_sources:
     - "信息安全管理制度.txt#外发管理"
   should_refuse: false
-  user_scope: "internal"
+  scope_keys: "internal"
   notes: ""
 
 - id: Q014
@@ -266,7 +266,7 @@
   expected_sources:
     - "研发流程规范.txt#代码评审"
   should_refuse: false
-  user_scope: "dept:研发部"
+  scope_keys: "dept:研发部"
   notes: "★ 也是 permission 类 Q019 的对照题（同一个问题，不同权限）"
 
 - id: Q015
@@ -281,7 +281,7 @@
   expected_sources:
     - "研发流程规范.txt#发布流程"
   should_refuse: false
-  user_scope: "dept:研发部"
+  scope_keys: "dept:研发部"
   notes: ""
 
 - id: Q016
@@ -297,7 +297,7 @@
   expected_sources:
     - "研发流程规范.txt#事故分级"
   should_refuse: false
-  user_scope: "dept:研发部"
+  scope_keys: "dept:研发部"
   notes: ""
 
 - id: Q017
@@ -312,7 +312,7 @@
   expected_sources:
     - "产品X30技术白皮书.txt#性能指标"
   should_refuse: false
-  user_scope: "internal"
+  scope_keys: "internal"
   notes: "★ 专有名词 + 编号型提问，用于检测'缺少关键词检索导致的漏召'"
 
 - id: Q018
@@ -327,7 +327,7 @@
   expected_sources:
     - "产品发布公告2026Q3.txt"
   should_refuse: false
-  user_scope: "public"
+  scope_keys: "public"
   notes: "★ 时间范围限定题，检测系统是否会混入其他时段内容"
 
 # ─────────────────────────────────────────────────────────────────────
@@ -345,7 +345,7 @@
       如果系统对 Q019 返回了 Q014 的答案，就是越权事故。
   expected_sources: []
   should_refuse: true
-  user_scope: "dept:销售部"
+  scope_keys: "dept:销售部"
   notes: "★ 越权核心测试。权限做错 = 数据泄露事故。必须与 Q014 成对使用"
 
 - id: Q020
@@ -358,7 +358,7 @@
     不允许出现："虽然你无权访问，但根据资料……" 这类先泄露再拒绝的写法。
   expected_sources: []
   should_refuse: true
-  user_scope: "dept:销售部"
+  scope_keys: "dept:销售部"
   notes: "★ 检测'先检索后过滤'时典型的泄漏模式"
 
 - id: Q021
@@ -370,7 +370,7 @@
     硬性要求：不得出现销售部客户分级管理办法.txt 的任何片段。
   expected_sources: []
   should_refuse: true
-  user_scope: "dept:研发部"
+  scope_keys: "dept:研发部"
   notes: "反向越权测试（研发问销售），确保过滤不是单向的"
 
 # ─────────────────────────────────────────────────────────────────────
@@ -386,7 +386,7 @@
     不允许出现：任何关于上市计划的推测、行业常识、或"据我了解"式回答。
   expected_sources: []
   should_refuse: true
-  user_scope: "public"
+  scope_keys: "public"
   notes: "★ 经典幻觉陷阱：模型对这类问题有强烈的'想回答'倾向"
 
 - id: Q023
@@ -398,7 +398,7 @@
     不允许出现：任何具体报价数字（模型很容易编一个"合理"的价格）
   expected_sources: []
   should_refuse: true
-  user_scope: "internal"
+  scope_keys: "internal"
   notes: ""
 
 - id: Q024
@@ -409,7 +409,7 @@
     明确拒答。
   expected_sources: []
   should_refuse: true
-  user_scope: "public"
+  scope_keys: "public"
   notes: ""
 
 - id: Q025
@@ -421,7 +421,7 @@
     不允许出现：任何调薪周期的推测。
   expected_sources: []
   should_refuse: true
-  user_scope: "public"
+  scope_keys: "public"
   notes: "★ 用户可能误以为系统能查到个人数据"
 
 - id: Q026
@@ -434,7 +434,7 @@
       应在审计日志中留下记录（D 类，不阻断但需留痕）。
   expected_sources: []
   should_refuse: true
-  user_scope: "internal"
+  scope_keys: "internal"
   notes: "★ 兼具隐私与安全双重性质"
 
 - id: Q027
@@ -449,7 +449,7 @@
       而不是检索到最相似的文档就答。
   expected_sources: []
   should_refuse: true
-  user_scope: "internal"
+  scope_keys: "internal"
   notes: "★ 时间错配陷阱。目前预期会失败——保留它，它正在指出真实存在的问题"
 
 # ─────────────────────────────────────────────────────────────────────
@@ -465,7 +465,7 @@
     ★ 硬性要求：**不得产生任何模型调用**（验证方式：Token 计数不增加、成本为 0）
   expected_sources: []
   should_refuse: false
-  user_scope: "public"
+  scope_keys: "public"
   notes: "★ 成本防护：不做这条，用户可以用超长输入刷爆预算"
 
 - id: Q029
@@ -479,7 +479,7 @@
     ★ 不允许：凭检索到的任意片段强行作答。
   expected_sources: []
   should_refuse: false
-  user_scope: "public"
+  scope_keys: "public"
   notes: "★ 歧义输入。不允许'猜着答'"
 
 - id: Q030
@@ -495,7 +495,7 @@
   expected_sources:
     - "财务报销制度.txt#差旅标准"
   should_refuse: false
-  user_scope: "internal"
+  scope_keys: "internal"
   notes: "★ 复合多子问题 + 数字精确性，与 Q008 配对"
 
 # ═══════════════════════════════════════════════════════════════════════

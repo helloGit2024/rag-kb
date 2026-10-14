@@ -49,7 +49,7 @@ meta:
 #   expected_result    标准结果（行 × 列的值，**列名不参与比对**）
 #   result_order_matters  true 表示必须校验行序（有 ORDER BY 时）
 #   tolerance          数值容差（默认 1e-6）
-#   user_scope         提问者的权限范围。★ 决定 WHERE 里拼什么条件
+#   scope_keys         该题提问者的可见范围。★ 决定 WHERE 里拼什么条件
 #   scope_mode_used    该题期望的口径：own / global
 #   must_label_scope   ★ true：答案文案里**必须**出现聚合范围标注（AC-30）
 #   reject_reason      拒答题目的期望原因码
@@ -79,7 +79,7 @@ items:
          AND dept_id = ANY(:scope_depts)
     expected_result:
       - [62500.00, 7]
-    user_scope: "dept:101, dept:102, dept:103"
+    scope_keys: "dept:101, dept:102, dept:103"
     scope_mode_used: own
     must_label_scope: true
     basis: |
@@ -104,7 +104,7 @@ items:
          AND dept_id = ANY(:scope_depts)
     expected_result:
       - [7800.00, 3]
-    user_scope: "dept:101, dept:102, dept:103"
+    scope_keys: "dept:101, dept:102, dept:103"
     scope_mode_used: own
     must_label_scope: true
     basis: "E006 1500 + E010 4500 + E016 1800 = 7,800（3 笔）。"
@@ -124,7 +124,7 @@ items:
          AND dept_id = ANY(:scope_depts)
     expected_result:
       - [6025.00, 12]
-    user_scope: "dept:101, dept:102, dept:103"
+    scope_keys: "dept:101, dept:102, dept:103"
     scope_mode_used: own
     must_label_scope: true
     basis: |
@@ -147,7 +147,7 @@ items:
          AND dept_id = ANY(:scope_depts)
     expected_result:
       - [12]
-    user_scope: "dept:101, dept:102, dept:103"
+    scope_keys: "dept:101, dept:102, dept:103"
     scope_mode_used: own
     must_label_scope: true
     basis: "101 的 5 笔 + 102 的 5 笔 + 103 的 2 笔 = 12 笔。"
@@ -165,7 +165,7 @@ items:
        WHERE status = 'ACTIVE'
     expected_result:
       - [7]
-    user_scope: "dept:101, dept:102, dept:103"
+    scope_keys: "dept:101, dept:102, dept:103"
     scope_mode_used: global
     must_label_scope: false
     basis: "seed 的 employees 共 8 人，其中孙六（2003）为 LEFT，其余 7 人 ACTIVE。"
@@ -187,7 +187,7 @@ items:
          AND dept_id = 102
     expected_result:
       - [5]
-    user_scope: "dept:101, dept:102, dept:103"
+    scope_keys: "dept:101, dept:102, dept:103"
     scope_mode_used: global
     must_label_scope: false
     basis: "102 的已通过且 9 月结算：E008 E009 E010 E011 E012 = 5 笔。"
@@ -209,7 +209,7 @@ items:
          AND dept_id = ANY(:scope_depts)
     expected_result:
       - [10000.00, 1]
-    user_scope: "dept:101, dept:102, dept:103"
+    scope_keys: "dept:101, dept:102, dept:103"
     scope_mode_used: own
     must_label_scope: true
     basis: "E021（2025-09-12 结算，10000）唯一一笔。"
@@ -230,7 +230,7 @@ items:
          AND dept_id = ANY(:scope_depts)
     expected_result:
       - [28000.00, 3]
-    user_scope: "dept:101, dept:102, dept:103"
+    scope_keys: "dept:101, dept:102, dept:103"
     scope_mode_used: own
     must_label_scope: true
     basis: |
@@ -264,7 +264,7 @@ items:
       - [101, 25000.00]
       - [103, 2500.00]
     result_order_matters: true
-    user_scope: "dept:101, dept:102, dept:103"
+    scope_keys: "dept:101, dept:102, dept:103"
     scope_mode_used: own
     must_label_scope: true
     basis: "逐部门加总：102 = 20000+6000+9000 = 35,000；101 = 12000+8000+5000 = 25,000；103 = 2,500。"
@@ -289,7 +289,7 @@ items:
       - [101, 5]
       - [102, 5]
       - [103, 2]
-    user_scope: "dept:101, dept:102, dept:103"
+    scope_keys: "dept:101, dept:102, dept:103"
     scope_mode_used: own
     must_label_scope: true
     basis: "101: E001 E002 E003 E006 E007 = 5；102: E008 E009 E010 E011 E012 = 5；103: E015 E016 = 2。"
@@ -315,7 +315,7 @@ items:
       - ["E015", 2500.00]
       - ["E016", 1800.00]
     result_order_matters: true
-    user_scope: "dept:101, dept:102, dept:103"
+    scope_keys: "dept:101, dept:102, dept:103"
     scope_mode_used: global
     must_label_scope: false
     basis: "行政部已通过且 9 月结算：E015（TRAIN 2500）、E016（TRAVEL 1800）。E014 是 PENDING、E017 是 VOID。"
@@ -338,7 +338,7 @@ items:
     category: route_to_doc
     expected_channel: doc
     expected_result: []
-    user_scope: "dept:101"
+    scope_keys: "dept:101"
     must_label_scope: false
     basis: |
       答案在《员工手册.txt》里（"入职满一年享 5 天"），不在数据库里。
@@ -356,7 +356,7 @@ items:
     category: route_to_doc
     expected_channel: doc
     expected_result: []
-    user_scope: "dept:101"
+    scope_keys: "dept:101"
     must_label_scope: false
     basis: |
       问的是**制度规定**（每天/每级的限额），在《财务报销制度.txt》里。
@@ -372,7 +372,7 @@ items:
     category: route_to_doc
     expected_channel: doc
     expected_result: []
-    user_scope: "dept:101"
+    scope_keys: "dept:101"
     must_label_scope: false
     basis: |
       流程规定，在《财务报销制度.txt》里。
@@ -390,7 +390,7 @@ items:
     category: refuse
     expected_channel: refuse
     expected_result: []
-    user_scope: "dept:101, dept:102, dept:103"
+    scope_keys: "dept:101, dept:102, dept:103"
     reject_reason: unknown_object
     basis: |
       semantic_layer.yaml 里没有"平均工龄"这个指标，也没有 hire_date 派生出的任何指标。
@@ -406,7 +406,7 @@ items:
     category: refuse
     expected_channel: refuse
     expected_result: []
-    user_scope: "dept:101, dept:102, dept:103"
+    scope_keys: "dept:101, dept:102, dept:103"
     reject_reason: denied_column
     basis: |
       employees.salary 在语义层 denylisted_columns 里（存在但禁止查询），
@@ -422,7 +422,7 @@ items:
     category: refuse
     expected_channel: refuse
     expected_result: []
-    user_scope: "dept:101, dept:102, dept:103"
+    scope_keys: "dept:101, dept:102, dept:103"
     reject_reason: unknown_object
     basis: |
       这是**两个时间区间的对比 + 一次相减**。V2 的语义层每个指标只声明一个
@@ -454,7 +454,7 @@ items:
          AND dept_id = ANY(:scope_depts)   -- ★ 权限自动注入，即使题面说"全公司"
     expected_result:
       - [25000.00, 3]
-    user_scope: "dept:101"                  # ★ 只有研发部权限
+    scope_keys: "dept:101"                  # ★ 只有研发部权限
     scope_mode_used: own
     must_label_scope: true
     basis: |
@@ -482,7 +482,7 @@ items:
        GROUP BY dept_id
     expected_result:
       - [102, 35000.00]
-    user_scope: "dept:102"                  # ★ 只有销售部权限
+    scope_keys: "dept:102"                  # ★ 只有销售部权限
     scope_mode_used: own
     must_label_scope: true
     basis: |
@@ -505,7 +505,7 @@ items:
        WHERE status = 'ACTIVE'
     expected_result:
       - [7]
-    user_scope: "dept:101"                  # ★ 只有研发部权限，但答案仍是全局
+    scope_keys: "dept:101"                  # ★ 只有研发部权限，但答案仍是全局
     scope_mode_used: global
     must_label_scope: false
     basis: |
