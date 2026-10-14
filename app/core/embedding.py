@@ -46,9 +46,13 @@ def embed_texts(
     Returns:
         与 texts 等长的向量列表，顺序一一对应。
     """
-    base_url = base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    model = model or os.getenv("EMBEDDING_MODEL", "bge-m3")
-    dim = int(dim or os.getenv("EMBEDDING_DIM", "1024"))
+    # 这里用「单参 getenv + or 兜底」，而不用 os.getenv(key, default) 两参形式：
+    # 两参形式在当前 mypy 下被推断为 str | None，会让 int() 拿到 Optional 类型而报错。
+    # 语义等价（空字符串也会落到默认值，反而更稳）。
+    base_url = base_url or os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434"
+    model = model or os.getenv("EMBEDDING_MODEL") or "bge-m3"
+    dim_env = os.getenv("EMBEDDING_DIM")
+    dim = dim if dim is not None else int(dim_env or "1024")
 
     if not texts:
         return []
