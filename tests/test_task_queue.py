@@ -135,11 +135,18 @@ _TEST_TAG = "t18-test"
 
 
 def _purge(engine: Engine) -> None:
-    """清掉本测试建的任务行（按 payload 里的 tag 识别），保证可重复跑。"""
+    """清掉本测试建的任务行，保证可重复跑。
+
+    ★ 必须按 payload 里的 **filename** 前缀匹配，不能按 task_uuid：
+    TestUploadApi 走真实上传端点，端点用 uuid4 生成 task_uuid（不以 t18-test
+    开头），按 uuid 清理会让这些行永久残留在 dev 库（e2e 时实测漏了 2 行）。
+    两类测试的 filename 都带 `t18-test` 前缀（_payload 用 t18-test.md，
+    上传接口测试用 t18-test-api.md），统一覆盖。
+    """
     with Session(engine) as session:
         session.execute(
             delete(ParseTask).where(
-                ParseTask.payload["task_uuid"].astext.like(f"{_TEST_TAG}%")
+                ParseTask.payload["filename"].astext.like(f"{_TEST_TAG}%")
             )
         )
         session.commit()
