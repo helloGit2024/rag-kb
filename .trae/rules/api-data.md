@@ -52,5 +52,16 @@ alwaysApply: false
   > 的指纹（`app/services/permission.py` 保证顺序稳定）。
   > **也不要写成 `user_scope`** —— 那是历史遗留的旧名，已废弃。
   > 权限范围相关的全部词（值 / 落盘字段 / 指纹 / 表名 / 函数名）见 `docs/glossary.md` 第七节。
+- 问答日志还必须带 `cache` 字段，取值 **`hit` / `miss` / `error`**（定义见
+  `app/core/cache.py` 的 `CACHE_HIT` / `CACHE_MISS` / `CACHE_ERROR`）。
+  > **为什么是三值而不是两值**：`miss`（读成功、确实没缓存）与 `error`（Redis
+  > 不可用、根本没读成）的**处置完全不同**——前者正常，后者是基础设施故障。
+  > T16 的验收方式恰恰是"看日志的 `cache` 字段"，两者混在一起会让
+  > "B 权限问同一问题不命中"因为**谁都不命中**而恒真（**假绿**）。
+  > 写缓存失败时额外输出 `"cache_write": "error"`——写失败完全静默，不标就不可统计。
+- 缓存是纯性能优化（`docs/glossary.md`：缓存可删），故障**不阻断问答、不返回 5xx**，
+  Redis 抖动时照常走完整链路并把 `cache` 标成 `error`。
+  但缓存故障**不属于** `degraded` —— `degraded` 专指预算超限 / 模型故障
+  （`docs/api-contract.md` 的响应体语义），往这里塞会让前端误判答案质量。
 - **禁止把全文文档内容、完整提示词、密钥写入日志**。检索日志只记 chunk_id 与分数，不记 chunk 文本。
 - 审计日志表只允许 INSERT：用数据库层面的约束保证不可 UPDATE/DELETE（V1 生效，见 `docs/security.md`）。
