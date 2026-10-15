@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Iterator
 
@@ -92,6 +93,33 @@ class TestUserScopeKeys:
 
     def test_blank_grants_ignored(self) -> None:
         assert user_scope_keys(_user(None), ["", "   "]) == ["internal", "public"]
+
+    def test_kb_grant_warns_but_stays_fail_closed(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """★ 已知缺口护栏：`kb:` 授权暂不生效（kb_id 轴未实现，见 tasks.md）。
+
+        断言两件事：
+        - 行为不变：授权值原样并入返回。它参与 scope_key 过滤但 chunks.scope_key
+          里没有 `kb:` 形式的值 → 匹配不到任何内容 → fail-closed，**不越权**；
+        - 缺口可见：打一条 `event=permission, status=warn` 结构化日志（R7）——
+          静默的话，多知识库场景上线时这就是跨库泄露。
+        """
+        result = user_scope_keys(_user("销售部"), ["kb:3"])
+        assert "kb:3" in result
+
+        err = capsys.readouterr().err
+        events = [json.loads(ln) for ln in err.splitlines() if ln.startswith("{")]
+        warns = [e for e in events if e.get("event") == "permission"]
+        assert warns, "出现 kb: 授权时必须打 WARN 日志"
+        assert warns[-1]["status"] == "warn"
+        assert warns[-1]["values"] == ["kb:3"]
+
+    def test_no_kb_grant_no_warn(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """没有 `kb:` 授权时不打 WARN（避免日志噪音）。"""
+        user_scope_keys(_user("销售部"), ["dept:研发部"])
+        err = capsys.readouterr().err
+        assert '"event": "permission"' not in err
 
 
 def _db_available() -> bool:

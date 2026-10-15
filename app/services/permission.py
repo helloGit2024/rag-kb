@@ -17,13 +17,19 @@
 
 ★ 与 data-model 2.5 的差异：2.5 的授权示例含 `kb:3`，而本版 `document_scope_key()`
   只生成 public / internal / dept:X。`user_scope_keys()` 对授权值**原样并入、
-  不做白名单**（以免拒绝 data-model 认可的 `kb:` 形式）——只是 `kb:3` 要等
-  T15 的 kb_id 轴才真正生效。
+  不做白名单**（以免拒绝 data-model 认可的 `kb:` 形式）。
+  ★ 已知缺口（已入账：T17b / OPEN-QUESTIONS #1）：**kb_id 轴尚未实现** ——
+  检索 SQL 目前只有 scope_key 一个条件
+  （两条件的正确写法见 data-model 第三节）。`kb:` 授权出现时打 WARN 日志
+  （fail-closed，不越权）；实现排期见 docs/tasks.md 的 T17b，
+  背景见 OPEN-QUESTIONS.md 第二节 #1。
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
+import sys
 from collections.abc import Sequence
 
 from sqlalchemy.orm import Session
@@ -34,6 +40,7 @@ from app.repos.user_repo import find_user_by_username, list_scope_keys
 SCOPE_PUBLIC = "public"
 SCOPE_INTERNAL = "internal"
 _DEPT_PREFIX = "dept:"
+_KB_PREFIX = "kb:"
 
 # 全员可见的范围：不放进 user_scope_grants 重复维护（已与项目所有者确认）
 _ALWAYS_VISIBLE = (SCOPE_PUBLIC, SCOPE_INTERNAL)
@@ -44,6 +51,29 @@ USER_STATUS_ACTIVE = "active"
 
 class ScopeError(ValueError):
     """scope 值非法或身份无法解析（R7：显式失败，不兜底成"可见"）。"""
+
+
+def _warn_unimplemented_kb_axis(keys: list[str]) -> None:
+    """`kb:` 授权出现但 kb_id 轴尚未实现（已入账：T17b）→ 显式告警（R7：错得可见）。
+
+    当前行为：`kb:<id>` 会参与 `scope_key = ANY(...)` 过滤，而 chunks.scope_key
+    只可能是 public / internal / dept:X → 永远匹配不上 → **fail-closed，不越权**，
+    但该授权暂不产生任何效果；多知识库场景 = 该用户看不到本应可见的内容。
+    为什么不抛错：`kb:` 是 data-model 2.5 认可的合法授权，抛错会让持有者完全
+    无法使用；WARN 不阻断，但让"授权未生效"在日志里可见。
+    """
+    print(
+        json.dumps(
+            {
+                "event": "permission",
+                "status": "warn",
+                "message": "kb_id 轴尚未实现，以下授权暂不生效",
+                "values": keys,
+            },
+            ensure_ascii=False,
+        ),
+        file=sys.stderr,
+    )
 
 
 def document_scope_key(scope: str) -> str:
@@ -90,6 +120,11 @@ def user_scope_keys(user: User, grants: Sequence[str]) -> list[str]:
         value = (grant or "").strip()
         if value:
             keys.add(value)
+    # ★ 已知缺口护栏：kb_id 轴未实现，`kb:` 授权暂不生效（fail-closed）。
+    #   出现即告警——静默的话，第一个多知识库场景上线时这就是跨库泄露。
+    kb_grants = sorted(k for k in keys if k.startswith(_KB_PREFIX))
+    if kb_grants:
+        _warn_unimplemented_kb_axis(kb_grants)
     return sorted(keys)
 
 
