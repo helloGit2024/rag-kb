@@ -101,6 +101,40 @@ services:
       silo:
         condition: service_healthy
 
+  # 入库 worker（V0.1 · T18）：BRPOP 消费 queue:ingest，跑 T13 的入库编排。
+  # ★ R10 在线/离线隔离：与 backend 是两个进程——解析/向量化再重也不会卡在线请求。
+  #   复用 backend 同一镜像（代码同源），只换入口命令；同样挂源码卷保证
+  #   "宿主编码 → 容器可见"与 backend 一致（worker 不走热重载，改代码后需
+  #   docker compose restart worker——进程型服务没有 --reload 语义）。
+  worker:
+    build: .
+    container_name: ragkb-worker
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      # 与 backend 同理：Ollama 嵌入服务在宿主机，必须走 host.docker.internal
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL}
+      EMBEDDING_DIM: ${EMBEDDING_DIM}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+    volumes:
+      - ./app:/app/app
+    command: python -m app.workers.ingest_worker
+    # 基础设施故障（Redis/DB 连不上）时 worker 会显式退出（R7），交给 restart 拉起
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      silo:
+        condition: service_healthy
+      backend:
+        condition: service_started
+
 volumes:
   pgdata:
   silodata:

@@ -1,6 +1,7 @@
 """FastAPI 入口。
 
-V-1 骨架版路由：/healthz（存活探针）+ POST /api/v1/query（问答）。
+路由：/healthz（存活探针）+ POST /api/v1/query（问答，V-1）
+      + POST /api/v1/documents（异步上传，V0.1 · T18）。
 """
 
 from __future__ import annotations
@@ -11,11 +12,14 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.api.v1.documents import router as documents_router
 from app.api.v1.query import ApiError
 from app.api.v1.query import router as query_router
+from app.services.file_validator import FileValidationError
 
 app = FastAPI(title="RAG-KB", version="0.1.0")
 app.include_router(query_router)
+app.include_router(documents_router)
 
 
 @app.get("/healthz")
@@ -29,6 +33,23 @@ async def _api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
     """业务异常 → 统一错误信封 {"error": {code, message, detail}}。
 
     信封格式见 api-data 规则第一节。
+    """
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": {"code": exc.code, "message": exc.message, "detail": exc.detail}
+        },
+    )
+
+
+@app.exception_handler(FileValidationError)
+async def _file_validation_error_handler(
+    request: Request, exc: FileValidationError
+) -> JSONResponse:
+    """文件校验异常（T12：409/413/415）→ 统一错误信封。
+
+    FileValidationError 与 ApiError 字段结构一致（status_code/code/message/detail），
+    分开注册是因为它们来自不同层：service 层不应该 import api 层的异常类。
     """
     return JSONResponse(
         status_code=exc.status_code,

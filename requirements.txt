@@ -1,5 +1,8 @@
 # ── 运行时依赖（技术栈锁定，见 AGENTS.md 第二节）──────────
 fastapi>=0.115
+# python-multipart：FastAPI 接收 multipart/form-data（文件上传）的官方必备组件，
+# 没有它 FastAPI 的 File()/Form() 路由直接拒绝注册（T18 上传接口必需，无替代品）
+python-multipart>=0.0.18
 uvicorn[standard]>=0.32
 psycopg[binary]>=3.2
 redis>=5.2
