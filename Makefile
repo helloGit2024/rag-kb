@@ -31,11 +31,15 @@ migrate-down:  ## 回滚上一个迁移
 # 本机跑测试：从 .env 读连接串，并把 compose 服务名换成 localhost
 # （postgres / silo / redis **三个都要换**；与 scripts/ingest.py 同一套约定；
 #  凭证只存在于被 .gitignore 忽略的 .env，Makefile 里只出现变量名，符合 R1）
-# pytest 从哪来：优先用项目自带的 .venv（存在即用），否则回落到 PATH 里的 pytest
-# （CI 容器内是全局安装）。目的是不让 `make test` 因为"忘了 source activate"
-# 只丢一句 `pytest: command not found` 就停住——门禁命令必须敲下去就能见结果。
-# 需要临时改用别的解释器时：make test PYTEST=/path/to/pytest
-PYTEST ?= $(if $(wildcard .venv/bin/pytest),.venv/bin/pytest,pytest)
+# pytest / ruff / mypy / gitleaks 从哪来：优先用项目自带的 .venv（存在即用），
+# 否则回落到 PATH（CI 容器内通常是全局安装）。目的是不让 `make test` /
+# `make lint` / `make scan` 因为"忘了 source activate"只丢一句
+# `command not found` 就停住——门禁命令必须敲下去就能见结果。
+# 需要临时改用别的解释器时：make lint RUFF=/path/to/ruff MYPY=/path/to/mypy
+PYTEST    ?= $(if $(wildcard .venv/bin/pytest),.venv/bin/pytest,pytest)
+RUFF      ?= $(if $(wildcard .venv/bin/ruff),.venv/bin/ruff,ruff)
+MYPY      ?= $(if $(wildcard .venv/bin/mypy),.venv/bin/mypy,mypy)
+GITLEAKS  ?= $(if $(wildcard .venv/bin/gitleaks),.venv/bin/gitleaks,gitleaks)
 
 test:  ## 跑全部测试（透传 pytest 参数：make test T="-k permission"）
 	@set -a; . ./.env; set +a; \
@@ -48,11 +52,11 @@ test:  ## 跑全部测试（透传 pytest 参数：make test T="-k permission"�
 	PYTHONPATH=. $(PYTEST) -q $(T)
 
 lint:  ## 检查代码规范与类型错误
-	ruff check .
-	mypy app
+	$(RUFF) check .
+	$(MYPY) app
 
 scan:  ## 扫描误提交的密钥（上线前必须跑）
-	gitleaks detect --no-banner --redact
+	$(GITLEAKS) detect --no-banner --redact
 
 # ── 清理 ────────────────────────────────────────────────
 clean:  ## 清理构建产物与临时文件（不动数据卷）
