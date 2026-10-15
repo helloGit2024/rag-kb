@@ -1,6 +1,7 @@
 """POST /api/v1/query 接口测试（T08）。
 
-全部 mock 掉嵌入 / 检索 / 生成，不联网、不需要真模型与数据库。
+全部 mock 掉嵌入 / 检索 / 生成 / **缓存**，不联网、不需要真模型与数据库
+（T16 起 answer_question 会先查 Redis，由 `_no_redis` fixture 挡掉）。
 覆盖验收：① curl 提问能拿到 JSON；② 超长问题返回 400【且不调用模型】。
 """
 
@@ -24,6 +25,20 @@ def _clear_dependency_overrides():
     """每个用例后清空依赖覆盖，避免相互污染（401 用例需要跑真实依赖）。"""
     yield
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_redis(monkeypatch):
+    """把缓存层置为"永远未命中 + 写入丢弃"，本文件不连任何外部依赖。
+
+    T16 起 `answer_question` 会先查 Redis。若放任它去连真 Redis，本机跑
+    （`REDIS_URL` 里是 compose 服务名 redis）会静默降级成"永远没缓存"——
+    这些用例就在不知不觉中**只测了降级路径**，而且看起来全绿。
+    缓存自身的四条路径（hit / miss / 读降级 / 写失败）显式测在
+    `tests/test_qa_cache.py`，那里才是断言 `cache` 字段的地方。
+    """
+    monkeypatch.setattr(qa, "get_answer", lambda *args, **kwargs: None)
+    monkeypatch.setattr(qa, "set_answer", lambda *args, **kwargs: None)
 
 
 def _hit() -> ChunkHit:

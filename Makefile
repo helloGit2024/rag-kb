@@ -28,15 +28,17 @@ migrate-down:  ## 回滚上一个迁移
 	docker compose -f docker-compose.dev.yml exec backend alembic downgrade -1
 
 # ── 质量检查 ────────────────────────────────────────────
-# 本机跑测试：从 .env 读连接串，并把 compose 服务名 postgres 换成 localhost
-# （与 scripts/ingest.py 同一套约定；凭证只存在于被 .gitignore 忽略的 .env，
-#   Makefile 里只出现变量名，符合 R1）
+# 本机跑测试：从 .env 读连接串，并把 compose 服务名换成 localhost
+# （postgres / silo / redis **三个都要换**；与 scripts/ingest.py 同一套约定；
+#  凭证只存在于被 .gitignore 忽略的 .env，Makefile 里只出现变量名，符合 R1）
 test:  ## 跑全部测试
 	@set -a; . ./.env; set +a; \
 	DATABASE_URL=$$(printf '%s' "$$DATABASE_URL" | sed 's/@postgres:/@localhost:/'); \
 	export DATABASE_URL; \
 	MINIO_ENDPOINT=$$(printf '%s' "$$MINIO_ENDPOINT" | sed 's|://silo:|://localhost:|'); \
 	export MINIO_ENDPOINT; \
+	REDIS_URL=$$(printf '%s' "$$REDIS_URL" | sed 's|//redis:|//localhost:|'); \
+	export REDIS_URL; \
 	PYTHONPATH=. pytest -q
 
 lint:  ## 检查代码规范与类型错误

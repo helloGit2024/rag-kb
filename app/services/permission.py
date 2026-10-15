@@ -4,6 +4,7 @@
 - 本模块（写入侧 + 解析逻辑）：
     · `document_scope_key()` —— 由 `documents.scope` 推导出 chunks 的 `scope_key`；
     · `user_scope_keys()` —— 把"用户 + 授权记录"聚合成检索时要用的可见范围集合；
+    · `scope_fingerprint()` —— 把可见范围压成缓存 key 用的稳定指纹（R3）；
     · `resolve_scope_keys()` —— 按用户名把上面两步串起来。
 - T15（检索侧）：把这套范围集合接到 `search_chunks` 的 SQL 条件上
   （`scope_key = ANY(...)` **且** `kb_id = ANY(...)`，见 data-model 第三节），
@@ -22,6 +23,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 
 from sqlalchemy.orm import Session
@@ -104,3 +106,27 @@ def resolve_scope_keys(session: Session, *, username: str) -> list[str]:
     if user.status != USER_STATUS_ACTIVE:
         raise ScopeError(f"用户已禁用：{username!r}（status={user.status!r}）")
     return user_scope_keys(user, list_scope_keys(session, user_id=user.id))
+
+
+def scope_fingerprint(scope_keys: Sequence[str]) -> str:
+    """把可见范围集合压成一个稳定指纹，供缓存 key 使用（R3）。
+
+    为什么必须存在：缓存 key 若只含问题文本，A 部门的问题会命中 B 部门的答案
+    —— 这是**越权泄露，且极难复现**（AGENTS.md R3）。
+
+    顺序与重复都不影响结果（先 `sorted(set(...))` 再哈希），
+    因此同一用户每次得到同一指纹，缓存命中率与隔离性兼得。
+
+    ★ 只回指纹、不回明文：指纹是**局部变量**，不落表（见 `docs/glossary.md`
+      第七节「权限范围相关词」，缓存指纹与 `scope_snapshot` 是两回事）。
+
+    Raises:
+        ScopeError: 传入空集合。空集合会生成一个"谁都能命中"的 key，必须显式失败
+            （R3/R7）。
+    """
+    normalized = sorted({k.strip() for k in scope_keys if k and k.strip()})
+    if not normalized:
+        raise ScopeError("scope_keys 为空，无法生成缓存指纹（R3/R7）")
+    # 用不可见字符作分隔，避免 ["a","b"] 与 ["a\x1fb"] 撞成同一串
+    payload = "\x1f".join(normalized).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
