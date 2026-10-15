@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Iterator
 
@@ -24,6 +23,7 @@ from app.services.permission import (
     ScopeError,
     document_scope_key,
     resolve_scope_keys,
+    user_accessible_kb_ids,
     user_scope_keys,
 )
 
@@ -80,46 +80,40 @@ class TestUserScopeKeys:
 
     def test_grants_are_unioned_deduped_and_sorted(self) -> None:
         keys = user_scope_keys(_user("研发部"), ["dept:销售部", "kb:3", "internal"])
-        # kb: 形式原样并入（data-model 2.5 认可），不因白名单被拒
+        # T17b：kb: 授权不再进 scope_keys，单独交给 user_accessible_kb_ids 解析
         assert set(keys) == {
             "dept:研发部",
             "dept:销售部",
-            "kb:3",
             "internal",
             "public",
         }
         # 排序稳定 → 缓存 fingerprint 稳定（R3）
         assert keys == sorted(keys)
+        # kb_ids 轴：kb:3 被抽成 int 列表
+        assert user_accessible_kb_ids(_user("研发部"), ["kb:3"]) == [3]
 
     def test_blank_grants_ignored(self) -> None:
         assert user_scope_keys(_user(None), ["", "   "]) == ["internal", "public"]
 
-    def test_kb_grant_warns_but_stays_fail_closed(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """★ 已知缺口护栏：`kb:` 授权暂不生效（kb_id 轴未实现，见 tasks.md）。
+    def test_kb_grant_is_parsed_to_kb_ids(self) -> None:
+        """T17b：kb: 授权不再原样并入 scope_keys，而是被抽成 kb_ids。
 
-        断言两件事：
-        - 行为不变：授权值原样并入返回。它参与 scope_key 过滤但 chunks.scope_key
-          里没有 `kb:` 形式的值 → 匹配不到任何内容 → fail-closed，**不越权**；
-        - 缺口可见：打一条 `event=permission, status=warn` 结构化日志（R7）——
-          静默的话，多知识库场景上线时这就是跨库泄露。
+        - scope_keys 里看不到 kb:3；
+        - user_accessible_kb_ids 能正确返回 [3]。
         """
-        result = user_scope_keys(_user("销售部"), ["kb:3"])
-        assert "kb:3" in result
+        keys = user_scope_keys(_user("销售部"), ["kb:3"])
+        assert "kb:3" not in keys
+        # kb_ids 轴：独立解析
+        kb_ids = user_accessible_kb_ids(_user("销售部"), ["kb:3"])
+        assert kb_ids == [3]
 
-        err = capsys.readouterr().err
-        events = [json.loads(ln) for ln in err.splitlines() if ln.startswith("{")]
-        warns = [e for e in events if e.get("event") == "permission"]
-        assert warns, "出现 kb: 授权时必须打 WARN 日志"
-        assert warns[-1]["status"] == "warn"
-        assert warns[-1]["values"] == ["kb:3"]
-
-    def test_no_kb_grant_no_warn(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """没有 `kb:` 授权时不打 WARN（避免日志噪音）。"""
-        user_scope_keys(_user("销售部"), ["dept:研发部"])
-        err = capsys.readouterr().err
-        assert '"event": "permission"' not in err
+    def test_invalid_kb_grants_are_skipped(self) -> None:
+        """非法 kb 授权（kb:abc / kb: / kb: 空后缀）跳过不抛错。"""
+        kb_ids = user_accessible_kb_ids(
+            _user("销售部"), ["kb:3", "kb:abc", "kb:", "kb:  ", "kb:3"]
+        )
+        # 只留合法值、去重、排序
+        assert kb_ids == [3]
 
 
 def _db_available() -> bool:

@@ -10,12 +10,13 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.v1.query import _require_user_scope_keys
+from app.api.v1.query import _require_user_permission
 from app.core.llm_gateway import GatewayError
 from app.main import app
 from app.repos.chunk_repo import ChunkHit
 from app.services import qa
 from app.services.generator import REFUSAL_TEXT, Citation, GeneratedAnswer
+from app.services.permission import PermissionBundle
 
 client = TestClient(app)
 
@@ -66,7 +67,9 @@ def _patch(monkeypatch, gen) -> None:
     def fake_search(query_vec, scope_keys, top_k=5, **kwargs):
         return [_hit()]
 
-    app.dependency_overrides[_require_user_scope_keys] = lambda: ["internal"]
+    app.dependency_overrides[_require_user_permission] = lambda: PermissionBundle(
+        scope_keys=["internal"]
+    )
     monkeypatch.setattr(qa, "embed_texts", fake_embed)
     monkeypatch.setattr(qa, "search_chunks", fake_search)
     monkeypatch.setattr(qa, "generate_answer", gen)
@@ -145,7 +148,9 @@ def test_invalid_question_400_without_model_call(monkeypatch, question):
         raise AssertionError("参数校验必须在调用嵌入/检索/生成之前失败")
 
     # 鉴权依赖先放行（否则缺失 header 会先返回 401，掩盖参数校验路径）
-    app.dependency_overrides[_require_user_scope_keys] = lambda: ["internal"]
+    app.dependency_overrides[_require_user_permission] = lambda: PermissionBundle(
+        scope_keys=["internal"]
+    )
     monkeypatch.setattr(qa, "embed_texts", boom)
     monkeypatch.setattr(qa, "search_chunks", boom)
     monkeypatch.setattr(qa, "generate_answer", boom)

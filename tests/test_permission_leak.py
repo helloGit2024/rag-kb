@@ -48,12 +48,15 @@ def _hot_vector(hot_index: int) -> list[float]:
     v[hot_index] = 1.0
     return v
 
-# (文档标题, scope, 热点位置, 内容提示)
-_DOC_SPECS: list[tuple[str, str, int, str]] = [
-    ("T17-销售部文档", "dept:销售部", 0, "销售部专属文档"),
-    ("T17-研发部文档", "dept:研发部", 1, "研发部专属文档"),
-    ("T17-财务部文档", "dept:财务部", 2, "财务部专属文档"),
-    ("T17-公开文档",   "public",      3, "全员可见的公开文档"),
+# (文档标题, scope, 热点位置, 内容提示, kb_id)
+_DOC_SPECS: list[tuple[str, str, int, str, int]] = [
+    ("T17-销售部文档", "dept:销售部", 0, "销售部专属文档", 1),
+    ("T17-研发部文档", "dept:研发部", 1, "研发部专属文档", 1),
+    ("T17-财务部文档", "dept:财务部", 2, "财务部专属文档", 1),
+    ("T17-公开文档",   "public",      3, "全员可见的公开文档", 1),
+    # T17b kb 轴：同 scope_key(internal) 不同 kb_id，热点 4/5
+    ("T17-kb1内部文档", "internal",   4, "kb1 的内部文档", 1),
+    ("T17-kb2内部文档", "internal",   5, "kb2 的内部文档", 2),
 ]
 
 # 需要预置授权的场景（授权变更 case 会动态加/删）
@@ -154,10 +157,10 @@ def seed(engine: Engine) -> dict[str, int]:
         doc_ids: dict[str, int] = {}
         chunks_to_add: list[Chunk] = []
 
-        for title, scope, hot, content in _DOC_SPECS:
+        for title, scope, hot, content, kb_id in _DOC_SPECS:
             doc = Document(
                 title=title, source_type="txt", scope=scope, status="done",
-                kb_id=1,
+                kb_id=kb_id,
             )
             session.add(doc)
             session.flush()
@@ -166,7 +169,7 @@ def seed(engine: Engine) -> dict[str, int]:
             chunks_to_add.append(
                 Chunk(
                     doc_id=doc.id,
-                    kb_id=1,
+                    kb_id=kb_id,
                     chunk_index=0,
                     content=content,
                     char_start=0,
@@ -384,3 +387,40 @@ def test_search_chunks_rejects_empty_scope_keys(
     """
     with pytest.raises(ValueError, match="scope_keys 不能为空"):
         search_chunks(_hot_vector(0), [], top_k=5, engine=engine)
+
+
+# ── Case 6：T17b kb 轴隔离（两条件 SQL 的第二条件）─────────────────
+def test_kb_axis_isolation_internal_docs(
+    engine: Engine, seed: dict[str, int],
+) -> None:
+    """T17b 验收：授权 internal + kb:1 的用户看不到 kb:2 的 internal 文档。
+
+    两个文档 scope_key 都是 internal —— scope_key 维度**拦不住**，
+    能拦住它们的只有第二条件 `c.kb_id = ANY(:kb_ids)`。
+    这条专门验证 kb 轴 SQL 条件真的生效，而不是形同虚设。
+    """
+    kb1_doc_id = seed["T17-kb1内部文档"]
+    kb2_doc_id = seed["T17-kb2内部文档"]
+    scope_keys = ["internal"]  # 两文档 scope_key 都命中
+
+    # 正例 1：kb_ids=[1] → 能看到 kb1 文档（两条件都满足）
+    hits = search_chunks(_hot_vector(4), scope_keys, top_k=5, kb_ids=[1], engine=engine)
+    assert any(h.doc_id == kb1_doc_id for h in hits), (
+        "kb_ids=[1] 时应能召回 kb1 文档；否则无法证明是 kb 过滤而非分数问题"
+    )
+
+    # 负例：kb_ids=[1] → 看不到 kb2 文档（scope_key 命中但 kb_id 不命中）
+    hits = search_chunks(_hot_vector(5), scope_keys, top_k=5, kb_ids=[1], engine=engine)
+    leaked = [h.doc_id for h in hits if h.doc_id == kb2_doc_id]
+    assert leaked == [], (
+        f"kb_ids=[1] 却检索到 kb2 的 internal 文档：{leaked}"
+        "（kb_id 轴条件未生效，T17b 验收不通过）"
+    )
+
+    # 正例 2：不传 kb_ids → kb 条件不追加 → kb2 文档可见（证明上面确实是
+    # kb 条件拦的，不是别的什么把它过滤掉了）
+    hits = search_chunks(_hot_vector(5), scope_keys, top_k=5, engine=engine)
+    assert any(h.doc_id == kb2_doc_id for h in hits), (
+        "不传 kb_ids 时 kb2 文档应可见（kb 条件不追加）；"
+        "否则负例的'看不到'可能是别的原因造成的假隔离"
+    )
