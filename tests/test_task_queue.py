@@ -3,6 +3,8 @@
 三层覆盖：
 - 队列（纯单元，FakeRedis 内存实现，不依赖真 Redis）：
   入队/出队往返、非法消息显式失败；
+  另有 1 条**真实 Redis** 回归（BRPOP 到点返回 None，防 redis-py 8
+  默认 socket_timeout=5s 把 worker 打成崩溃循环，见 TestQueueRealRedis）；
 - task_repo（集成，需要 PostgreSQL）：
   insert/get/状态推进（pending→running→done/failed），task_id 自增、
   payload 快照落库、doc_id 回写；
@@ -88,6 +90,31 @@ class TestQueue:
         fake.lpush(queue_mod.QUEUE_KEY, "not-a-task-id")
         with pytest.raises(ValueError, match="非法 task_id"):
             queue_mod.pop_ingest(client=fake)  # type: ignore[arg-type]
+
+
+def _redis_available() -> bool:
+    try:
+        queue_mod._queue_client().ping()
+    except Exception:
+        return False
+    return True
+
+
+class TestQueueRealRedis:
+    """回归（集成，需要真 Redis）：BRPOP 到点必须返回 None，不得抛 TimeoutError。
+
+    背景：redis-py 8 起 `from_url` 的 socket_timeout **默认 5s**（8 之前为 None），
+    BRPOP 阻塞 5s 时客户端与服务端同时到点、客户端先超时——worker 每 5s
+    崩溃重启一次（e2e 实测，详见 app/core/queue.py 模块 docstring）。
+    FakeRedis 测不出这个（不过 socket），必须打真 Redis。
+    """
+
+    def test_pop_timeout_returns_none_not_raise(self) -> None:
+        if not _redis_available():
+            pytest.skip("Redis 未启动，跳过真实出队回归测试")
+        # timeout_s=1：验证"到点返回 None"的语义，1s 足够触发且不让测试变慢。
+        # 队列在生产/测试中都只有 worker 与上传接口触碰，此处跑在空队列上。
+        assert queue_mod.pop_ingest(timeout_s=1) is None
 
 
 # ── 集成：task_repo 状态推进 ─────────────────────────────────────────
