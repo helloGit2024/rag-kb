@@ -31,7 +31,13 @@ migrate-down:  ## 回滚上一个迁移
 # 本机跑测试：从 .env 读连接串，并把 compose 服务名换成 localhost
 # （postgres / silo / redis **三个都要换**；与 scripts/ingest.py 同一套约定；
 #  凭证只存在于被 .gitignore 忽略的 .env，Makefile 里只出现变量名，符合 R1）
-test:  ## 跑全部测试
+# pytest 从哪来：优先用项目自带的 .venv（存在即用），否则回落到 PATH 里的 pytest
+# （CI 容器内是全局安装）。目的是不让 `make test` 因为"忘了 source activate"
+# 只丢一句 `pytest: command not found` 就停住——门禁命令必须敲下去就能见结果。
+# 需要临时改用别的解释器时：make test PYTEST=/path/to/pytest
+PYTEST ?= $(if $(wildcard .venv/bin/pytest),.venv/bin/pytest,pytest)
+
+test:  ## 跑全部测试（透传 pytest 参数：make test T="-k permission"）
 	@set -a; . ./.env; set +a; \
 	DATABASE_URL=$$(printf '%s' "$$DATABASE_URL" | sed 's/@postgres:/@localhost:/'); \
 	export DATABASE_URL; \
@@ -39,7 +45,7 @@ test:  ## 跑全部测试
 	export MINIO_ENDPOINT; \
 	REDIS_URL=$$(printf '%s' "$$REDIS_URL" | sed 's|//redis:|//localhost:|'); \
 	export REDIS_URL; \
-	PYTHONPATH=. pytest -q
+	PYTHONPATH=. $(PYTEST) -q $(T)
 
 lint:  ## 检查代码规范与类型错误
 	ruff check .

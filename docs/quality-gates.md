@@ -20,7 +20,7 @@
 | H3 | 类型检查 | mypy 零错误 | — | `make lint` |
 | H4 | 代码规范 | ruff / eslint 零 error | — | `make lint` |
 | H5 | **密钥扫描** | 无任何疑似密钥 | `AGENTS.md` R1 | `make scan` |
-| H6 | **越权测试** | 全部通过，0 泄漏 | AC-05 | `make test -k permission` |
+| H6 | **越权测试** | 全部通过，0 泄漏 | AC-05 | `make test T="-k permission"` |
 | H7 | **拒答正确率** | ≥ 0.90 | AC-09 | `make eval` |
 | H8 | **误拒率** | ≤ 0.05 | AC-09 | `make eval` |
 | H9 | **Recall@5 / MRR** | Recall@5 ≥ 0.85 且相对基线下降 ≤ 2%；MRR ≥ 0.70 | AC-07 | `make eval-compare` |
@@ -142,7 +142,7 @@ jobs:
       # ── V2：启用 SQL 通道后追加 ──────────────────────────────
       - run: make seed-sql       # 建临时库 + 灌 evals/sql/seed.sql（结果可复现的前提）
       - run: make eval-sql       # H24 H25（比结果集，不比 SQL 文本）+ SQL 侧拒答率
-      - run: make test -k sql_safety   # H26（12 条攻击/越界输入）
+      - run: make test T="-k sql_safety"   # H26（12 条攻击/越界输入）
 ```
 
 **关键点：故意提交一个坏改动，确认 CI 真的拦住了它。**
