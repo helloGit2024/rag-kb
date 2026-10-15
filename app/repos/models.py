@@ -26,7 +26,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import TSVECTOR
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -161,4 +161,53 @@ class UserScopeGrant(Base):
     __table_args__ = (
         # 权限解析要按 user_id 取授权列表，建索引免得每次全表扫
         Index("ix_user_scope_grants_user_id", "user_id"),
+    )
+
+
+# 任务状态取值（docs/data-model.md 2.6）
+TASK_STATUS_PENDING = "pending"
+TASK_STATUS_RUNNING = "running"
+TASK_STATUS_DONE = "done"
+TASK_STATUS_FAILED = "failed"
+
+# 任务类型（data-model 2.6 枚举：parse / embed / eval）。
+# V0.1 只用 parse——"解析＋向量化"是一条不可拆的链路（ingest_document），
+# 拆成 parse/embed 两个任务只会增加重试与补偿难度；用 parse 指代整条链。
+TASK_TYPE_PARSE = "parse"
+
+
+class ParseTask(Base):
+    """异步任务表（V0.1 · T18）。字段见 docs/data-model.md 2.6。
+
+    ★ doc_id 可空：上传接口只建任务行（文件在 MinIO 暂存），
+      worker 跑完 ingest 才回写 doc_id。
+    ★ payload 存任务参数快照（kb_id / filename / scope / staging_key /
+      file_md5），便于重放——Redis 队列消息里只放 task_id。
+    """
+
+    __tablename__ = "parse_tasks"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    doc_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    task_type: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default=TASK_STATUS_PENDING
+    )
+    progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+    started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        # worker 拉任务与状态查询接口都按 status 过滤
+        Index("ix_parse_tasks_status", "status"),
     )

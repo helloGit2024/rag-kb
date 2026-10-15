@@ -125,6 +125,68 @@ def put_text(
     return key
 
 
+def put_bytes(
+    key: str,
+    data: bytes,
+    *,
+    content_type: str = "application/octet-stream",
+    client: Minio | None = None,
+    config: StorageConfig | None = None,
+) -> str:
+    """把字节写入对象存储，返回对象 key（T18 暂存原文用——此时还没做 UTF-8 校验，
+    不能假定能 decode 成 str）。"""
+    config = config or load_config()
+    client = client or get_client(config)
+    client.put_object(
+        config.bucket,
+        key,
+        io.BytesIO(data),
+        length=len(data),
+        content_type=content_type,
+    )
+    return key
+
+
+def get_bytes(
+    key: str,
+    *,
+    client: Minio | None = None,
+    config: StorageConfig | None = None,
+) -> bytes:
+    """读出对象字节。连接必定释放（finally），异常照抛（R7）。"""
+    config = config or load_config()
+    client = client or get_client(config)
+    response = client.get_object(config.bucket, key)
+    try:
+        return response.read()
+    finally:
+        response.close()
+        response.release_conn()
+
+
+def delete_object(
+    key: str,
+    *,
+    client: Minio | None = None,
+    config: StorageConfig | None = None,
+) -> None:
+    """删除单个对象。对象不存在不报错（minio SDK 语义，幂等）。"""
+    config = config or load_config()
+    client = client or get_client(config)
+    client.remove_object(config.bucket, key)
+
+
+def staging_key(task_uuid: str, filename: str) -> str:
+    """上传暂存对象 key：`staging/{task_uuid}/{filename}`（T18）。
+
+    与正式对象的 `docs/{doc_uuid}/` 前缀隔开：
+    - 正式对象的生命周期跟着 documents 行走（删除时按前缀清）；
+    - 暂存对象的生命周期跟着 parse_tasks 走（worker 消费后删），
+      两个前缀不混，清理时不会误删。
+    """
+    return f"staging/{task_uuid}/{filename}"
+
+
 def get_text(
     key: str,
     *,
