@@ -47,13 +47,16 @@ def answer_question(
     *,
     top_k: int = 5,
     scope_keys: list[str] | None = None,
+    kb_ids: list[int] | None = None,
 ) -> QaResult:
-    """把问题跑完整条链路，外面套一层**权限隔离**缓存（T16）。
+    """把问题跑完整条链路，外面套一层**权限隔离**缓存（T16 + T17b）。
 
     Args:
         question: 用户问题（调用方应已校验非空/未超长）。
         top_k: 检索条数。
-        scope_keys: 用户可见范围。★ 必须显式传入，权限过滤在 SQL 内完成（R2）。
+        scope_keys: 用户可见范围（非 kb 维度）。
+            ★ 必须显式传入，权限过滤在 SQL 内完成（R2）。
+        kb_ids: 用户可见知识库 ID 列表（T17b）。非空时检索 SQL 追加 kb 轴条件。
 
     Returns:
         QaResult。命中缓存时直接回放上次结果——此时 `retrieve_ms` / `generate_ms`
@@ -69,8 +72,10 @@ def answer_question(
         # R7：宁可显式失败，也不静默检索出越权内容
         raise ValueError("scope_keys 不能为空（R2/R7）")
 
-    # R3：缓存 key = 问题文本 + 权限指纹。指纹不同 → key 不同 → 绝不跨权限命中。
-    key = qa_cache_key(question, scope_fingerprint(scope_keys))
+    # R3 + T17b：缓存 key = 问题哈希 + 权限指纹（含 kb_ids）。
+    # 指纹不同 → key 不同 → 绝不跨权限命中——包括"同 scope_keys 但不同 kb_ids"
+    # 这种 kb 轴越权，都能被 kb_ids 拼进哈希挡住。
+    key = qa_cache_key(question, scope_fingerprint(scope_keys, kb_ids))
 
     # ① 查缓存：命中就直接回放，不触碰嵌入/检索/生成（省时省钱）
     t_cache = time.perf_counter()
@@ -99,7 +104,7 @@ def answer_question(
     # ② 未命中：跑完整链路
     t0 = time.perf_counter()
     query_vec = embed_texts([question])[0]
-    hits = search_chunks(query_vec, scope_keys, top_k=top_k)
+    hits = search_chunks(query_vec, scope_keys, top_k=top_k, kb_ids=kb_ids)
     t1 = time.perf_counter()
     gen = generate_answer(question, hits)
     t2 = time.perf_counter()

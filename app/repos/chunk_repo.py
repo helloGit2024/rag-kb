@@ -40,6 +40,7 @@ def search_chunks(
     scope_keys: list[str],
     top_k: int = 5,
     *,
+    kb_ids: list[int] | None = None,
     engine: Engine | None = None,
 ) -> list[ChunkHit]:
     """向量检索 Top-K。
@@ -49,6 +50,10 @@ def search_chunks(
         scope_keys: 当前用户有权访问的 scope_key 列表（由 permission 解析得到）。
             ★ 权限过滤在 SQL WHERE 里完成，不在应用层过滤。
         top_k: 返回条数。
+        kb_ids: 当前用户有权访问的 kb_id 列表（T17b 新增）。非空时追加
+            `AND c.kb_id = ANY(:kb_ids)` 条件；空时不追加（向后兼容）。
+            ★ 不传或传 [] 都会让 kb 条件不生效——多库场景下这意味着"所有 kb 可见"，
+              行为取决于 chunks 表里的数据分布；caller 应显式传入以保证隔离。
         engine: 可选，注入的 SQLAlchemy Engine（测试时用）。不传则用 db.get_engine()。
 
     Returns:
@@ -61,27 +66,31 @@ def search_chunks(
     eng = engine or get_engine()
     SessionLocal = sessionmaker(bind=eng)
 
+    # WHERE 条件片段：scope_key 必选，kb_id 可选（T17b）
+    where_clauses = ["c.scope_key = ANY(:scope_keys)"]
+    params: dict[str, object] = {
+        "query_vec": query_vec,
+        "scope_keys": list(scope_keys),
+        "top_k": top_k,
+    }
+    if kb_ids:
+        where_clauses.append("c.kb_id = ANY(:kb_ids)")
+        params["kb_ids"] = list(kb_ids)
+
     sql = text(
-        """
+        f"""
         SELECT c.id, c.content, c.doc_id, d.title, c.char_start, c.char_end,
                1 - (c.embedding <=> CAST(:query_vec AS vector)) AS score
         FROM chunks c
         JOIN documents d ON d.id = c.doc_id
-        WHERE c.scope_key = ANY(:scope_keys)
+        WHERE {" AND ".join(where_clauses)}
         ORDER BY c.embedding <=> CAST(:query_vec AS vector)
         LIMIT :top_k
         """
     )
 
     with SessionLocal() as session:
-        rows = session.execute(
-            sql,
-            {
-                "query_vec": query_vec,
-                "scope_keys": list(scope_keys),
-                "top_k": top_k,
-            },
-        ).fetchall()
+        rows = session.execute(sql, params).fetchall()
 
     return [
         ChunkHit(
