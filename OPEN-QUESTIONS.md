@@ -17,6 +17,8 @@ _（暂无。自动汇总标了 5 处"可能阻塞"，见下方 🤖 区，人�
 |---|---|---|---|---|---|
 | 1 | ~~**`kb_id` 轴检索过滤未实现**~~ | `app/repos/chunk_repo.py`、`app/services/permission.py` | **已由 T17b 实现**（2026-10-15）：检索 SQL 为两条件；`kb:` 授权由 `user_accessible_kb_ids()` 解析成 kb_ids；WARN 护栏随之移除；回归 case 见 `tests/test_permission_leak.py` Case 6 | 已落地 | ✅ 已决（移入第三节 #2） |
 | 2 | **`scripts/collect_open_questions.py` 自动汇总脚本缺失**：清单承诺"`⚙️` 标记由脚本汇总到 🤖 区"，但脚本从未存在过；🤖 区当前靠**人工粘贴**维护 | `OPEN-QUESTIONS.md` 文件头说明（本次提交）、`scripts/` 目录 | 🤖 区 AI 扫出来后人工粘贴；每次清单更新（比如 T17b 入账）后，🤖 区的 28 处过时标记需要**手工重新扫一遍**才能同步 —— 下次就会被遗忘 | 仅影响本清单维护流程；不影响任何功能代码 / 测试 / 验收 | ⬜ 未决 |
+| 3 | **`status` 枚举有两套值**：`docs/spec.md` AC-02、`docs/api-contract.md` §5.4、`docs/data-model.md` 2.3（documents）用的是 `pending → parsing → chunking → embedding → done`；而 `docs/data-model.md` 2.6（parse_tasks）与 `docs/openapi.yaml` 的 ParseTask 只有 `pending / running / done / failed / canceled`。GET /api/v1/tasks/{id} 返回的正是 ParseTask，api-contract §5.4 示例却写 `"status": "embedding"` —— 同一份契约里出现两台状态机 | `docs/spec.md`、`docs/api-contract.md` §5.4、`docs/data-model.md` 2.3 与 2.6、`docs/openapi.yaml` | **T19 按 2.6 + openapi 执行**（4 态 + `progress` 字段表示进度）；spec 里的阶段名理解为 progress 的细分，统一文档待后续专门改 | 改的话要动 spec.md / api-contract.md / data-model.md 三处示例 | ⬜ 未决 |
+| 4 | **`parse_tasks.doc_id` 的可空性**：`docs/data-model.md` 2.6 写 "doc_id: bigint FK"（读起来是"非空 + 外键"），而 `alembic/versions/0003_parse_tasks.py` 实际建的是**可空、无外键**。实现是对的（任务行先于文档存在，worker 跑完才回写 doc_id），是文档措辞没写清 | `docs/data-model.md` 2.6、`alembic/versions/0003_parse_tasks.py` | 按实现现状执行（可空、无 FK）；文档补一句说明待后续 | 改的话只影响 data-model 2.6 的措辞 | ⬜ 未决 |
 
 > ~~**这条与第一条性质不同**~~（第一条已决，保留原文备查）：kb 轴是**功能缺口**（影响权限隔离的正确性），脚本缺失是**维护流程缺口**（影响清单能否持续更新）。前者必须在 T17b 补上，后者可以暂缓 —— 暂缓的代价只是下次清单更新时要记得手工同步 🤖 区，不会造成线上风险。
 
@@ -26,6 +28,9 @@ _（暂无。自动汇总标了 5 处"可能阻塞"，见下方 🤖 区，人�
 |---|---|---|---|---|
 | 1 | T17（越权回归测试集）是否顺带补 kb 轴实现？ | **否**——T17 只做部门轴测试；kb 轴单独排 T17b（补两轴要改 chunk_repo 签名 + permission 数据链，超出"只加测试"范围） | T17 验收时发现缺口，与项目所有者确认 | 2026-10-15 |
 | 2 | `kb_id` 轴检索过滤未实现（原第二节 #1） | **T17b 已实现**：两条件 SQL + `PermissionBundle`（scope_keys/kb_ids 两轴）+ 缓存指纹含 kb_ids；越权回归 Case 6 通过 | T17b 验收：`make test T="-k permission"` 全绿 | 2026-10-15 |
+| 3 | T19 的"任务状态推进"要不要给 `ingest_document` 加阶段回调（解析/分块/向量化 → 30/60/90）？ | **不加**——保持粗粒度进度（running=0 / done=100 / 失败保留最后值），不改 T13 已完成的 `ingest_document` 签名 | 与项目所有者确认：V0.1 前端只需"状态 + 失败原因"，细粒度进度留 V1 | 2026-10-16 |
+| 4 | T19 重试策略：确定性失败（非 UTF-8 / 解析后为空）要不要跳过重试？ | **不跳过**——所有失败一律重试，`retry_count < 3` 即回退 pending 重新入队，达上限转终态 failed；不做异常分类 | 与项目所有者确认：坏文件在解析阶段就中断、根本不调嵌入，3 次重试成本毫秒级；换来"嵌入服务抖动"这类瞬时故障能自愈 | 2026-10-16 |
+| 5 | T19 发现的两处 docs 矛盾（`status` 枚举两套值 / `doc_id` 可空性）是否当场改文档？ | **否**——T19 按 `data-model.md` 2.6 + `openapi.yaml` 执行，矛盾记入本清单第二节 #3 / #4，待后续专门改 | 与项目所有者确认 | 2026-10-16 |
 
 ## 四、这张清单怎么用
 
