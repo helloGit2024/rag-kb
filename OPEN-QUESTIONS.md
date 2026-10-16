@@ -21,6 +21,9 @@ _（暂无。自动汇总标了 5 处"可能阻塞"，见下方 🤖 区，人�
 | 4 | **`parse_tasks.doc_id` 的可空性**：`docs/data-model.md` 2.6 写 "doc_id: bigint FK"（读起来是"非空 + 外键"），而 `alembic/versions/0003_parse_tasks.py` 实际建的是**可空、无外键**。实现是对的（任务行先于文档存在，worker 跑完才回写 doc_id），是文档措辞没写清 | `docs/data-model.md` 2.6、`alembic/versions/0003_parse_tasks.py` | 按实现现状执行（可空、无 FK）；文档补一句说明待后续 | 改的话只影响 data-model 2.6 的措辞 | ⬜ 未决 |
 | 5 | **400 级错误码只有 `QUESTION_INVALID` 一个**：T21 的知识库参数校验（非法 scope / 字段超长）也复用它，`code` 被拉伸成"任何入参不合法"。T21 的兜底是让 `RequestValidationError` 处理器**按路径分流文案**（`/api/v1/query` → 问题参数说明；其他 → 通用"字段缺失或超长"），但 `code` 仍是 `QUESTION_INVALID` | `docs/api-contract.md` §3.3 错误码清单、`app/main.py` | 沿用 T18 处理非法 scope 时的同一妥协；补一个通用入参码（如 `INVALID_PARAMETER`）需同步改 api-contract + openapi | 改的话动 api-contract.md / openapi.yaml 两处 | ⬜ 未决 |
 | 6 | **上传接口未接"知识库默认 scope"**：`docs/openapi.yaml` 说上传不传 scope 时取知识库 `default_scope`，但 `app/api/v1/documents.py` 仍硬编码 `scope=internal`（其代码注释写着"T21 后再换成 kb 默认值"）。接上还要顺带校验 `kb_id` 存在；且 dev 库已有 kb_id=1/2/3 的存量文档而无对应知识库行 | `app/api/v1/documents.py`、`docs/openapi.yaml`（POST /documents） | 保持 T18 已验收行为不变；已与项目所有者确认**单独排任务**（会改 T18 行为 + 需给存量 kb 补数据行，超出 T21"只加 CRUD"范围） | 改的话动 documents.py + 可能需要数据补齐脚本 | ⬜ 未决（已确认单独排任务） |
+| 7 | **T22 未打通 `uploaded_by` 与自定义 `title`**：① documents 行由 worker **异步**创建，上传接口并不知道将来是谁建的（`perm.user_id` 从未进过 worker），故列表 `uploaded_by` 恒为 `null`（契约里是 string）；② 上传不接受契约里的 `title` 表单字段——现有 `title` 由 filename 推得，且 `validate_metadata` 还从 filename 推 `source_type`，要支持自定义 title 必须改 `ingest_document` / worker 签名（T13/T18 已验收链路） | `app/api/v1/documents.py`、`app/services/ingest.py`、`app/workers/ingest_worker.py`、`docs/openapi.yaml` | 与项目所有者确认**合并为同一张后续任务**（两者都要动入库链路，一起改只付一次代价） | 3—4 个文件 + payload 增字段（向后兼容） | ⬜ 未决（已确认单独排任务） |
+| 8 | **`DELETE` 的鉴权口径两条通道不一致**：`DELETE /documents/{id}` 校可见范围（不在范围内返 404），而 `DELETE /knowledge-bases/{id}` 只校验身份（T21 口径）。两者都是删除不可逆操作 | `app/api/v1/documents.py`、`app/api/v1/knowledge_bases.py` | T22 方案阶段与项目所有者确认"删除文档校可见范围"；T21 时未讨论该问题。建议 V0.1 收尾前统一为"校范围" | 改 T21 侧需同步改 `tests/test_kb_crud.py` 的用例 | ⬜ 未决 |
+| 9 | **文档列表信封不含 `page` / `page_size`**：契约如此（`docs/openapi.yaml` L263—274，与知识库列表 L185—190 不同），T22 按契约实现，前端分页组件需自己保留页码状态 | `docs/openapi.yaml`、`app/schemas/documents.py` | 按契约实现，**仅备案**；若前端需要回显页码，需先改契约 | 改的话动 openapi + schema 两处 | ⬜ 未决（仅备案） |
 
 > ~~**这条与第一条性质不同**~~（第一条已决，保留原文备查）：kb 轴是**功能缺口**（影响权限隔离的正确性），脚本缺失是**维护流程缺口**（影响清单能否持续更新）。前者必须在 T17b 补上，后者可以暂缓 —— 暂缓的代价只是下次清单更新时要记得手工同步 🤖 区，不会造成线上风险。
 
@@ -37,6 +40,11 @@ _（暂无。自动汇总标了 5 处"可能阻塞"，见下方 🤖 区，人�
 | 7 | T21 DELETE 的"级联清理"在 V0.1 做到哪一步？ | **级联三步**：真删 `chunks` → `documents` 软删（`is_active=false`，行保留）→ 删 `knowledge_bases` 行；对象存储按 `docs/{uuid}/` 前缀整段删，且**先删对象、后删库行**（反过来会留永久孤儿对象＝静默数据留存） | 同上（T21 方案阶段 AskUserQuestion 选"级联三步"） | 2026-10-16 |
 | 8 | T21 知识库重名返回什么？ | **新增错误码 `DUPLICATE_KB_NAME`（409）**（已补进 `docs/api-contract.md` §3.3）；判重以数据库 UNIQUE 约束为准，不做"预检查 + 相信它" | 同上（T21 方案阶段 AskUserQuestion 选"新增 DUPLICATE_KB_NAME"） | 2026-10-16 |
 | 9 | T21 `GET /knowledge-bases` 列表要不要按权限过滤？ | **否**——V0.1 列出全部；（"谁能看知识库"这一层 V0.1 未建立，实际可见性仍由文档级 `chunks.scope_key + kb_id` 两条件 SQL 决定，列表不构成越权） | 同上（T21 方案阶段 AskUserQuestion 选"列全部"） | 2026-10-16 |
+| 10 | T22 `GET /documents` 列表要不要按权限过滤？ | **是**——可见性（`scope_keys` + `kb_ids` 两轴）下沉到 SQL WHERE（R2）。文档标题常含敏感信息（如"XX 部门降薪方案"），列全部等于泄露；与知识库列表不同，此处不做"列全部"的妥协 | 与项目所有者确认（T22 方案阶段 AskUserQuestion 选"按权限过滤"） | 2026-10-16 |
+| 11 | T22 `DELETE /documents/{id}` 要不要校可见范围？ | **是**——不在范围内返回 **404**（不是 403：403 等于告诉调用方"该 id 确实存在"）。过滤条件与列表一致、同在 SQL WHERE（R2） | 与项目所有者确认（删除不可逆，按项目规则先问你；选"校可见范围"） | 2026-10-16 |
+| 12 | T22 列表的 `status` 查询参数按什么校验？ | **严格按 `openapi.yaml` 六态**（pending/parsing/chunking/embedding/done/failed），非法值 400、空白串视同不传；不顺从实现的真实分布（实际只会出现 `done`，其余五态为 V1 预留） | 与项目所有者确认（T22 方案阶段 AskUserQuestion 选"严格按 openapi 六态"） | 2026-10-16 |
+| 13 | T22 `uploaded_by` 要不要本任务一并打通？ | **否**——列表暂返回 `null`；（documents 行由 worker 异步创建，上传接口不知道将来是谁建的）。与自定义 `title` 合并为同一张后续任务（见第二节 #7） | 与项目所有者确认（T22 方案阶段 AskUserQuestion 选"暂返回 null，另排任务"） | 2026-10-16 |
+| 14 | T22 删除文档的"级联清理"做到哪一步？ | **级联三步**：删对象存储 → 真删 `chunks` → `documents` 软删（行保留）；缓存失效与审计日志留 V1（与 T21 知识库删除同口径） | 与项目所有者确认（T22 方案阶段 AskUserQuestion 选"级联三步"） | 2026-10-16 |
 
 ## 四、这张清单怎么用
 
