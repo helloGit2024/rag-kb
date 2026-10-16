@@ -1,7 +1,7 @@
 """FastAPI 入口。
 
 路由：/healthz（存活探针）+ POST /api/v1/query（问答，V-1）
-      + POST /api/v1/documents（异步上传，V0.1 · T18）
+      + /api/v1/documents（上传 V0.1 · T18；列表 / 删除 · T22）
       + /api/v1/knowledge-bases（知识库 CRUD，V0.1 · T21）。
 """
 
@@ -17,6 +17,7 @@ from app.api.v1.documents import router as documents_router
 from app.api.v1.knowledge_bases import router as knowledge_bases_router
 from app.api.v1.query import ApiError
 from app.api.v1.query import router as query_router
+from app.services.document import DocumentError
 from app.services.file_validator import FileValidationError
 from app.services.kb import KbError
 
@@ -48,15 +49,17 @@ async def _api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
 
 @app.exception_handler(FileValidationError)
 @app.exception_handler(KbError)
+@app.exception_handler(DocumentError)
 async def _service_error_handler(
-    request: Request, exc: FileValidationError | KbError
+    request: Request, exc: FileValidationError | KbError | DocumentError
 ) -> JSONResponse:
-    """服务层异常（T12 文件校验 409/413/415、T21 知识库 400/404/409）→ 统一错误信封。
+    """服务层异常（T12 文件校验 409/413/415、T21 知识库 400/404/409、
+    T22 文档 400/404）→ 统一错误信封。
 
-    FileValidationError 与 KbError 字段结构一致（status_code/code/message/detail），
-    因此共用同一个处理器（同一个函数挂两个装饰器），避免抄第二份一模一样的
-    响应构造代码。分开于 ApiError 注册是因为它们来自 service 层：
-    service 层不应该 import api 层的异常类。
+    FileValidationError / KbError / DocumentError 字段结构一致
+    （status_code/code/message/detail），因此共用同一个处理器（同一个函数挂
+    三个装饰器），避免抄第三份一模一样的响应构造代码。分开于 ApiError 注册
+    是因为它们来自 service 层：service 层不应该 import api 层的异常类。
     """
     return JSONResponse(
         status_code=exc.status_code,

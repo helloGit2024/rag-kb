@@ -1,10 +1,14 @@
-"""POST /api/v1/documents 路由（V0.1 · T18 最小上传接口）。
+"""文档相关路由：上传（V0.1 · T18）、列表与删除（V0.1 · T22）。
 
-本层只做：收文件 → 同步校验（类型/大小/去重）→ 暂存 MinIO → 建任务行 →
+- POST   /api/v1/documents               上传（异步，202 + task_id）—— T18
+- GET    /api/v1/documents               列表（分页，按权限过滤）—— T22
+- DELETE /api/v1/documents/{doc_id}      删除（级联三步）      —— T22
+
+上传层只做：收文件 → 同步校验（类型/大小/去重）→ 暂存 MinIO → 建任务行 →
 入队 → 202 + task_id。解析与向量化全部异步（R10：HTTP 请求里禁止同步重活）。
+列表 / 删除只做：解析入参 → 调 service → 映射响应，不写业务逻辑、不查库。
 
-★ 边界：本文件只实现**上传**这一个端点（T18 验收"500ms 内返回 task_id"）；
-  列表 / 删除属 T22，任务状态查询属 T23。
+★ 任务状态查询属 T23，不在本文件。
 """
 
 from __future__ import annotations
@@ -13,15 +17,17 @@ import uuid
 from typing import Annotated
 
 import redis
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile
 from sqlalchemy.orm import Session
 
 from app.api.v1.query import ApiError, _require_user_permission
 from app.core.queue import enqueue_ingest
 from app.core.storage import ensure_bucket, put_bytes, staging_key
 from app.repos.db import get_session
+from app.repos.document_repo import DocumentRow
 from app.repos.task_repo import insert_task, mark_failed
-from app.schemas.documents import UploadAccepted
+from app.schemas.documents import DocumentListOut, DocumentOut, UploadAccepted
+from app.services import document as document_service
 from app.services.file_validator import validate_upload
 from app.services.permission import (
     PermissionBundle,
@@ -30,6 +36,72 @@ from app.services.permission import (
 )
 
 router = APIRouter(prefix="/api/v1", tags=["documents"])
+
+
+def _to_out(row: DocumentRow) -> DocumentOut:
+    return DocumentOut(
+        id=row.id,
+        kb_id=row.kb_id,
+        title=row.title,
+        source_type=row.source_type,
+        file_size=row.file_size,
+        status=row.status,
+        scope=row.scope,
+        chunk_count=row.chunk_count,
+        error_reason=row.error_reason,
+        uploaded_by=row.uploaded_by,
+        created_at=row.created_at,
+    )
+
+
+@router.get("/documents", response_model=DocumentListOut)
+def list_documents(
+    session: Annotated[Session, Depends(get_session)],
+    perm: Annotated[PermissionBundle, Depends(_require_user_permission)],
+    kb_id: Annotated[int | None, Query()] = None,
+    status: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> DocumentListOut:
+    """文档列表（分页，只含未软删文档）。
+
+    ★ 权限：可见范围（scope_keys + kb_ids 两轴）传给 service，由 repo 写进
+      SQL WHERE（R2）——**不在应用层筛**。文档标题常含敏感信息，
+      不做过滤等于列表接口泄密。
+
+    Raises:
+        DocumentError: 400（status 非法）。
+    """
+    rows, total = document_service.list_documents(
+        session,
+        scope_keys=perm.scope_keys,
+        kb_ids=perm.kb_ids,
+        kb_id=kb_id,
+        status=status,
+        page=page,
+        page_size=page_size,
+    )
+    return DocumentListOut(items=[_to_out(r) for r in rows], total=total)
+
+
+@router.delete("/documents/{doc_id}", status_code=204)
+def delete_document(
+    doc_id: int,
+    session: Annotated[Session, Depends(get_session)],
+    perm: Annotated[PermissionBundle, Depends(_require_user_permission)],
+) -> Response:
+    """删除文档（级联：删对象存储 → 删向量 → 软删库行）。
+
+    Raises:
+        DocumentError: 404 NOT_FOUND（不存在、已软删，或不在可见范围内）。
+    """
+    document_service.delete_document(
+        session,
+        doc_id=doc_id,
+        scope_keys=perm.scope_keys,
+        kb_ids=perm.kb_ids,
+    )
+    return Response(status_code=204)
 
 
 @router.post(
