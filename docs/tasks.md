@@ -110,7 +110,8 @@
 
 | ID | 任务 | 来源 | 验收标准 | 验收难度 |
 |----|------|------|---------|---------|
-| ENV-01 | 排查 Docker Desktop 资源/磁盘配置（Postgres 崩溃 + 磁盘过慢） | T19 验收（2026-10-16）：`postgres` 容器进程 exit code 2 → 崩溃恢复 72s；checkpoint `write=9.7s`、恢复 fsync `10.05s`；当日问答接口曾卡 10.9s | 查清崩溃根因（内存上限 / 磁盘空间 / Docker 资源配额），给出结论与处置（要么修配置，要么确认是单机磁盘固有性能并记录基线） | 我能验收 |
+| ENV-01 | 排查 Docker Desktop 资源/磁盘配置（Postgres 崩溃 + 磁盘过慢） ✅ **已完成**（2026-10-16：三项嫌疑全部排除——配额 12GB/256GB 充裕、宿主可用 57G、容器与 VM 均无 OOM；postgres 为 stock 默认配置；崩溃时磁盘慢属一过性停滞，实测基线 pgdata 卷 fdatasync **509 MB/s** 健康；backend exit code 2 判定为 Docker Desktop VM 一次性瞬态事件，配置层无可修，韧性已由 T19 崩溃退回队列 + 幂等守卫兜底。处置：不改配置，复发时采 postgres 日志 + VM dmesg + macOS Console） | T19 验收（2026-10-16）：`postgres` 容器进程 exit code 2 → 崩溃恢复 72s；checkpoint `write=9.7s`、恢复 fsync `10.05s`；当日问答接口曾卡 10.9s | 查清崩溃根因（内存上限 / 磁盘空间 / Docker 资源配额），给出结论与处置（要么修配置，要么确认是单机磁盘固有性能并记录基线） | 我能验收 |
+| ENV-02 | Docker Hub 拉镜像超时（`registry-1.docker.io` context deadline exceeded） ⏸ **暂不处理**（已确认）：现有镜像全部在本地，日常开发不受影响；待需要拉新镜像（如 `docker compose build` 依赖更新）时再排查本机网络/代理 | ENV-01 排查附带发现（2026-10-16） | 能正常 `docker pull` 新镜像 | 我能验收 |
 
 **V0.1 退出门禁**：见 `docs/releases.md`。
 
