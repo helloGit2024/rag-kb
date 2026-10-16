@@ -15,6 +15,7 @@ T21 定档的三个决策（2026-10-16 与项目所有者确认）：
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -248,21 +249,37 @@ def update_kb(
     return _to_summary(refreshed, doc_count)
 
 
-def delete_kb(session: Session, kb_id: int) -> int:
+def delete_kb(
+    session: Session,
+    kb_id: int,
+    *,
+    scope_keys: Sequence[str],
+    kb_ids: Sequence[int] | None = None,
+) -> int:
     """删除知识库（级联：清对象 → 删向量 → 软删文档 → 删库行）。
+
+    ★ 可见范围校验（OPEN-QUESTIONS #8 统一裁决，与 DELETE /documents 同口径）：
+      按 KB 的 `default_scope` 与 kb 授权两轴判定（两轴同构于文档可见性），
+      不在范围内一律 404（不是 403——403 会泄露"该 id 确实存在"）。
+      这是保守方向：KB 里存在你看不见的文档时，你删不了它
+      （防止"看不见却连带删掉"）。
 
     Returns:
         被软删的文档数（供日志/排查用）。
 
     Raises:
         KbError: 404 NOT_FOUND。对象存储故障（S3Error）原样上抛 → 500（R7）。
+        ValueError: scope_keys 为空（R2/R7：宁可显式失败，也不放开删除）。
 
     ★ 顺序是"先删对象、后删库行"，不是反过来：反过来的话，若对象删除失败，
       知识库行已经没了，用户重试只会得到 404，而原文就**永久留在对象存储里**
       ——静默的数据留存，且没有任何机制能发现。反过来（先对象后库行）最坏
       结果是"对象已清、库行还在"，用户重试即可收敛（删除是幂等的）。
     """
-    kb = kb_repo.get_kb(session, kb_id)
+    if not scope_keys:
+        raise ValueError("scope_keys 不能为空，否则会删到越权知识库（R2/R7）")
+
+    kb = kb_repo.get_kb(session, kb_id, scope_keys=scope_keys, kb_ids=kb_ids)
     if kb is None:
         raise KbError(404, "NOT_FOUND", "知识库不存在", {"kb_id": kb_id})
 

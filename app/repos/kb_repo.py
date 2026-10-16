@@ -9,7 +9,9 @@
 
 from __future__ import annotations
 
-from sqlalchemy import delete, func, select, update
+from collections.abc import Sequence
+
+from sqlalchemy import ColumnElement, delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app.repos.models import Chunk, Document, KnowledgeBase
@@ -61,9 +63,32 @@ def count_active_docs(session: Session, *, kb_id: int) -> int:
     )
 
 
-def get_kb(session: Session, kb_id: int) -> KnowledgeBase | None:
-    """按 id 取知识库；不存在返回 None（由服务层翻译成 404）。"""
-    return session.get(KnowledgeBase, kb_id)
+def get_kb(
+    session: Session,
+    kb_id: int,
+    *,
+    scope_keys: Sequence[str] | None = None,
+    kb_ids: Sequence[int] | None = None,
+) -> KnowledgeBase | None:
+    """按 id 取知识库；不存在（或不在可见范围内）返回 None。
+
+    ★ 可见范围口径（OPEN-QUESTIONS #8 统一裁决，与文档删除同构）：
+      `kb.default_scope ∈ scope_keys` 且（kb_ids 为空 或 kb.id ∈ kb_ids）。
+      不传两个参数时退化为"只按 id 取"——GET 详情 / 列表继续用它
+      （列表已决"列全部"，OPEN-QUESTIONS 三节 #9）。
+      不在范围内的知识库返回 None → 上层 404，**不返回 403**
+      （403 会告诉调用方"这个 id 确实存在"，等于泄露）。
+    """
+    if scope_keys is None:
+        return session.get(KnowledgeBase, kb_id)
+    conditions: list[ColumnElement[bool]] = [
+        KnowledgeBase.default_scope.in_(list(scope_keys))
+    ]
+    if kb_ids:
+        conditions.append(KnowledgeBase.id.in_(list(kb_ids)))
+    return session.scalar(
+        select(KnowledgeBase).where(KnowledgeBase.id == kb_id, *conditions)
+    )
 
 
 def find_kb_by_name(session: Session, *, name: str) -> KnowledgeBase | None:

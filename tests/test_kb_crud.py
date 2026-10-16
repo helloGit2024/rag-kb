@@ -349,7 +349,9 @@ class TestKbCascadeDelete:
         )
 
         with Session(engine) as session:
-            doc_count = kb_service.delete_kb(session, kb_id)
+            doc_count = kb_service.delete_kb(
+                session, kb_id, scope_keys=["internal"]
+            )
         assert doc_count == 1
 
         # ③ 对象存储：按文档前缀整段删（raw + parsed 一次清理）
@@ -374,7 +376,7 @@ class TestKbCascadeDelete:
         monkeypatch.setattr(kb_service, "delete_prefix", lambda p: 0)
         with Session(engine) as session:
             with pytest.raises(KbError) as ei:
-                kb_service.delete_kb(session, -1)
+                kb_service.delete_kb(session, -1, scope_keys=["internal"])
         assert ei.value.status_code == 404
 
     def test_delete_is_idempotent_after_success(
@@ -384,11 +386,76 @@ class TestKbCascadeDelete:
         kb_id, _ = self._seed_kb_with_docs(engine)
         monkeypatch.setattr(kb_service, "delete_prefix", lambda p: 0)
         with Session(engine) as session:
-            kb_service.delete_kb(session, kb_id)
+            kb_service.delete_kb(session, kb_id, scope_keys=["internal"])
         with Session(engine) as session:
             with pytest.raises(KbError) as ei:
-                kb_service.delete_kb(session, kb_id)
+                kb_service.delete_kb(session, kb_id, scope_keys=["internal"])
         assert ei.value.status_code == 404
+
+    def test_delete_out_of_scope_is_404(
+        self, engine: Engine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """不在可见范围内的知识库按"不存在"处理（404，不是 403）。
+
+        ★ 口径与 DELETE /documents 统一（OPEN-QUESTIONS #8）：
+          `default_scope ∈ scope_keys` 才可见。这是保守方向——
+          KB 里可能存在你看不见的文档，看不见就不该删。
+        """
+        monkeypatch.setattr(kb_service, "delete_prefix", lambda p: 0)
+        with Session(engine) as session:
+            kb = kb_service.create_kb(
+                session,
+                name=_kb_name("scoped"),
+                description=None,
+                default_scope="dept:研发部",
+                created_by=None,
+            )
+            kb_id = kb.id
+        with Session(engine) as session:
+            with pytest.raises(KbError) as ei:
+                kb_service.delete_kb(session, kb_id, scope_keys=["internal"])
+            assert ei.value.status_code == 404
+            # 未被删除：KB 行还在（对有权者而言仍可管理）
+            assert session.get(KnowledgeBase, kb_id) is not None
+
+    def test_delete_kb_axis_mismatch_is_404(
+        self, engine: Engine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """kb 轴不匹配也 404：scope 可见但 kb_ids 授权不含该 KB。"""
+        monkeypatch.setattr(kb_service, "delete_prefix", lambda p: 0)
+        with Session(engine) as session:
+            kb = kb_service.create_kb(
+                session,
+                name=_kb_name("kbaxis"),
+                description=None,
+                default_scope="internal",
+                created_by=None,
+            )
+            kb_id = kb.id
+        with Session(engine) as session:
+            with pytest.raises(KbError) as ei:
+                kb_service.delete_kb(
+                    session, kb_id, scope_keys=["internal"], kb_ids=[999999]
+                )
+            assert ei.value.status_code == 404
+            # 对照组：kb_ids 命中时同一用户可以删（排除"恒 404"的假测试）
+            kb2 = kb_service.create_kb(
+                session,
+                name=_kb_name("kbaxis-hit"),
+                description=None,
+                default_scope="internal",
+                created_by=None,
+            )
+        with Session(engine) as session:
+            kb_service.delete_kb(
+                session, kb2.id, scope_keys=["internal"], kb_ids=[kb2.id]
+            )
+
+    def test_delete_empty_scope_keys_raises(self, engine: Engine) -> None:
+        """scope_keys 为空必须显式失败（R2/R7），不得静默放开删除。"""
+        with Session(engine) as session:
+            with pytest.raises(ValueError, match="scope_keys"):
+                kb_service.delete_kb(session, 1, scope_keys=[])
 
 
 # ── api 层 ──────────────────────────────────────────────────────────
@@ -532,6 +599,22 @@ class TestKbApi:
         assert (
             client.delete(f"/api/v1/knowledge-bases/{kb_id}").status_code == 404
         )
+
+    def test_delete_out_of_scope_via_api_is_404(
+        self, client: TestClient
+    ) -> None:
+        """API 层越权删除：default_scope 不在用户 scope_keys 内 → 404。
+
+        ★ client 的身份 override 是 scope_keys=["internal"]（见 fixture），
+          建一个 dept: 知识库再删，应按"不存在"处理。
+        """
+        kb_id = client.post(
+            "/api/v1/knowledge-bases",
+            json={"name": _kb_name("api-del-oos"), "default_scope": "dept:财务"},
+        ).json()["id"]
+        resp = client.delete(f"/api/v1/knowledge-bases/{kb_id}")
+        assert resp.status_code == 404
+        assert resp.json()["error"]["code"] == "NOT_FOUND"
 
     def test_requires_auth(self, engine: Engine) -> None:
         """不覆盖依赖、不带 X-KB-User → 401（列表也不能匿名拉）。"""

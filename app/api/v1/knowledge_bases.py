@@ -114,9 +114,14 @@ def delete_knowledge_base(
 ) -> Response:
     """删除知识库（级联：清对象存储 → 删向量 → 软删文档 → 删库行）。
 
+    ★ 可见范围（OPEN-QUESTIONS #8 统一，与 DELETE /documents 同口径）：
+      按 KB 的 `default_scope` + kb 授权两轴校验（service → repo 下沉到
+      SQL WHERE，R2）；不在范围内返回 404（不是 403）。
+
     Raises:
-        KbError: 404 NOT_FOUND。
+        KbError: 404 NOT_FOUND（不存在，或不在可见范围内）。
     """
-    _ = perm
-    kb_service.delete_kb(session, kb_id)
+    kb_service.delete_kb(
+        session, kb_id, scope_keys=perm.scope_keys, kb_ids=perm.kb_ids
+    )
     return Response(status_code=204)
