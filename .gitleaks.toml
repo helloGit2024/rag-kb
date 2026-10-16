@@ -1,0 +1,13 @@
+# gitleaks 配置（ENV-03）。
+# `gitleaks detect` 在仓库根目录运行时会自动读取本文件（Makefile 无需传 --config）。
+#
+# 维护纪律：这里的豁免只允许收录**确认过源码的误报**，且每条必须注明
+# 误报原因。豁免面写宽了会让真密钥漏扫——加新规则前先看命中原文。
+# 新误报的处置流程：gitleaks detect -v 看命中行源码 → 确认无密钥 →
+# 追加窄 regex（或官方 fingerprint）→ 重跑 make scan。
+
+title = "rag-kb 密钥扫描配置"
+
+[allowlist]
+  description = "误报：PermissionBundle 字段访问。generic-api-key 规则把\n形如 kb_ids=perm.kb_ids 的参数传递误判为 API key（熵 3.5 过阈值），\n该文本是纯变量访问，不是密钥（首次命中：8746a8b，knowledge_bases.py L125）。"
+  regexes = ['''perm\.kb_ids''']

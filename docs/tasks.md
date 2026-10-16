@@ -112,7 +112,7 @@
 |----|------|------|---------|---------|
 | ENV-01 | 排查 Docker Desktop 资源/磁盘配置（Postgres 崩溃 + 磁盘过慢） ✅ **已完成**（2026-10-16：三项嫌疑全部排除——配额 12GB/256GB 充裕、宿主可用 57G、容器与 VM 均无 OOM；postgres 为 stock 默认配置；崩溃时磁盘慢属一过性停滞，实测基线 pgdata 卷 fdatasync **509 MB/s** 健康；backend exit code 2 判定为 Docker Desktop VM 一次性瞬态事件，配置层无可修，韧性已由 T19 崩溃退回队列 + 幂等守卫兜底。处置：不改配置，复发时采 postgres 日志 + VM dmesg + macOS Console） | T19 验收（2026-10-16）：`postgres` 容器进程 exit code 2 → 崩溃恢复 72s；checkpoint `write=9.7s`、恢复 fsync `10.05s`；当日问答接口曾卡 10.9s | 查清崩溃根因（内存上限 / 磁盘空间 / Docker 资源配额），给出结论与处置（要么修配置，要么确认是单机磁盘固有性能并记录基线） | 我能验收 |
 | ENV-02 | Docker Hub 拉镜像超时（`registry-1.docker.io` context deadline exceeded） ⏸ **暂不处理**（已确认）：现有镜像全部在本地，日常开发不受影响；待需要拉新镜像（如 `docker compose build` 依赖更新）时再排查本机网络/代理 | ENV-01 排查附带发现（2026-10-16） | 能正常 `docker pull` 新镜像 | 我能验收 |
-| ENV-03 | gitleaks 未安装（`make scan` 报 `No such file or directory`，完成定义里"没有提交任何密钥"这条门禁目前靠人工 grep 新增文件兜底） ⏸ **待安装**：`brew install gitleaks` 即可，属开发机工具（不进项目依赖，无需走 R12 新依赖申请——它不是代码依赖）；装好后跑一次 `make scan` 验证全量历史无泄露 | T21 验收时发现（2026-10-16）：提交前想跑密钥扫描才发现工具缺失；T21/T22 的 5 个 commit 已用人工 grep 核对过敏感串 | `make scan` 在本机可跑通且退出码 0 | 我能验收 |
+| ENV-03 | gitleaks 未安装（`make scan` 报 `No such file or directory`，完成定义里"没有提交任何密钥"这条门禁目前靠人工 grep 新增文件兜底） ✅ **已完成**（2026-10-16：`brew install gitleaks`（8.30.1，开发机工具不进项目依赖）；首次全量扫描 57 commits 报 1 条——经核对源码为**误报**（`generic-api-key` 规则把 `kb_ids=perm.kb_ids` 参数传递误判为 API key），按窄 regex 豁免（新增 `.gitleaks.toml`，只匹配 `perm\.kb_ids` 变量文本，不遮真泄露）；复跑 `make scan` **no leaks found** 退出码 0。维护纪律已写入 `.gitleaks.toml` 头注释：豁免只收确认过源码的误报并注明原因） | T21 验收时发现（2026-10-16）：提交前想跑密钥扫描才发现工具缺失；T21/T22 的 5 个 commit 已用人工 grep 核对过敏感串 | `make scan` 在本机可跑通且退出码 0 | 我能验收 |
 
 **V0.1 退出门禁**：见 `docs/releases.md`。
 
