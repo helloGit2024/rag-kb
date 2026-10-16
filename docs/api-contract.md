@@ -85,6 +85,7 @@ Authorization: Bearer <jwt>   # V1：标准 JWT
 | `FILE_TOO_LARGE` | 413 | 文件超 20 MB |
 | `FILE_TYPE_UNSUPPORTED` | 415 | 文件类型不支持 |
 | `DUPLICATE_FILE` | 409 | md5 重复 |
+| `DUPLICATE_KB_NAME` | 409 | ★ T21：知识库名称重复（`knowledge_bases.name` 上有 UNIQUE 约束） |
 | `RATE_LIMITED` | 429 | 触发限流 |
 | `MODEL_UNAVAILABLE` | 503 | 所有模型均不可用 |
 | `MODEL_TEST_FAILED` | 422 | 模型连通性测试未通过，配置**未落库/未生效** |
