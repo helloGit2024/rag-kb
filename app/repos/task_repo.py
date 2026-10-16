@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.repos.models import (
     TASK_STATUS_DONE,
     TASK_STATUS_FAILED,
+    TASK_STATUS_PENDING,
     TASK_STATUS_RUNNING,
     TASK_TYPE_PARSE,
     ParseTask,
@@ -73,13 +74,35 @@ def mark_done(session: Session, task_id: int, *, doc_id: int) -> None:
 
 
 def mark_failed(session: Session, task_id: int, *, error_reason: str) -> None:
-    """running → failed，落 error_reason。
+    """running → failed（终态），落 error_reason。
 
-    ★ T18 只做单次执行、失败即 failed；重试 3 次与"人话"改写属 T19，
-      这里如实记录原始错误链，不美化、不吞掉（R7）。
+    ★ error_reason 必须是"人话"（api-contract 5.4 / AC-02）。
+      worker 侧统一经 app/services/task_failure.human_reason 转换后传入，
+      本层只负责落库，不做文案（分层：SQL 层不管文案，业务层不管 SQL）。
     """
     task = get_task(session, task_id)
     task.status = TASK_STATUS_FAILED
     task.error_reason = error_reason
     task.finished_at = datetime.now(UTC)
     session.flush()
+
+
+def mark_pending_for_retry(
+    session: Session, task_id: int, *, error_reason: str
+) -> int:
+    """失败后回退成 pending 以便重试：retry_count += 1，返回新值。
+
+    ★ 语义（data-model 2.6「retry_count 最多 3」）：retry_count 记"已重试次数"，
+      worker 判 `retry_count < TASK_MAX_RETRY` 才重试，达到上限转 mark_failed。
+    ★ progress 归 0：整体完成度回到起点（本版不做阶段进度，属 T19 方案口径）。
+    ★ finished_at 置空：任务并未终结，终结时间只属于 done / failed。
+    ★ 不 commit：worker 需要控制"先落状态、再入队"的顺序（见 ingest_worker）。
+    """
+    task = get_task(session, task_id)
+    task.status = TASK_STATUS_PENDING
+    task.retry_count += 1
+    task.error_reason = error_reason
+    task.progress = 0
+    task.finished_at = None
+    session.flush()
+    return task.retry_count

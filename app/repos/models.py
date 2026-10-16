@@ -170,6 +170,11 @@ TASK_STATUS_RUNNING = "running"
 TASK_STATUS_DONE = "done"
 TASK_STATUS_FAILED = "failed"
 
+# 任务最大重试次数（docs/data-model.md 2.6「retry_count 最多 3」）。
+# ★ 语义：失败后 retry_count += 1，只要 < 本值就重新入队再试一次；
+#   达到本值即转终态 failed —— 最多重试 3 次，总尝试最多 4 次。
+TASK_MAX_RETRY = 3
+
 # 任务类型（data-model 2.6 枚举：parse / embed / eval）。
 # V0.1 只用 parse——"解析＋向量化"是一条不可拆的链路（ingest_document），
 # 拆成 parse/embed 两个任务只会增加重试与补偿难度；用 parse 指代整条链。
