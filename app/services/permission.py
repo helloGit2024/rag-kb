@@ -61,6 +61,10 @@ class PermissionBundle:
 
     scope_keys: list[str] = field(default_factory=list)
     kb_ids: list[int] = field(default_factory=list)
+    # 当前用户主键（T21 起用于记录"谁创建的知识库"）。
+    # 留默认值 None：老调用方（测试里的 PermissionBundle(scope_keys=[...])）
+    # 不传也不会炸（dataclass 默认值的意义就在这）。
+    user_id: int | None = None
 
 
 def document_scope_key(scope: str) -> str:
@@ -164,6 +168,7 @@ def resolve_permission(
     return PermissionBundle(
         scope_keys=user_scope_keys(user, raw_grants),
         kb_ids=user_accessible_kb_ids(user, raw_grants),
+        user_id=user.id,
     )
 
 

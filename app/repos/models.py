@@ -1,17 +1,21 @@
-"""ORM 模型定义（V-1 骨架 → V0.1 · T14）。
+"""ORM 模型定义（V-1 骨架 → V0.1 · T14 / T18 / T21）。
 
-表：documents / chunks（V-1骨架）+ users / user_scope_grants（V0.1 T14）。
+表：documents / chunks（V-1骨架）+ users / user_scope_grants（V0.1 T14）
+    + parse_tasks（V0.1 T18）+ knowledge_bases（V0.1 T21）。
 ★ app/repos/ 是唯一允许出现 SQL 的层；这里只放表结构元数据，不写查询 SQL。
 
 FK 取舍（R8：先加字段、后加约束）：
 - documents.uploaded_by → users.id：V-1 已加字段（可空），T14 补 FK 约束。
-- documents.kb_id：等 T21 建 knowledge_bases 后再补 FK。
+- documents.kb_id → knowledge_bases.id：**仍未补**。T21 建了表，但 dev 库已有
+  kb_id=1/2/3 的文档行而无对应知识库行，直接加 FK 会立刻违反约束。
+  补 FK 需先补齐知识库数据，单独排任务（见 alembic/versions/0004 注释）。
 - chunks.doc_id → documents.id（V-1 已建）。
+- knowledge_bases.created_by → users.id（T21 新建表时一并加，无历史数据）。
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import List, Optional
 
 from pgvector.sqlalchemy import Vector
@@ -32,6 +36,20 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
     pass
+
+
+def _utcnow() -> datetime:
+    """带时区的 UTC 当前时间（T21）。
+
+    为什么新表不再用 `datetime.utcnow()`：它返回**朴素** datetime
+    （无 tzinfo），写进 `timestamptz` 列后读回来没有时区，
+    JSON 序列化就成了 `2026-10-16T06:57:29.459297`（无 Z）——
+    与列表接口里读库得到的 `...Z`（带时区）**同一字段两种形状**。
+    契约里 created_at 是 date-time（应带时区），故新表直接用 aware 值。
+    ★ 不动 documents/chunks/users 的老默认值：那是既有行为，
+      统一替换属独立重构（R9 改动最小化）。
+    """
+    return datetime.now(UTC)
 
 
 class Document(Base):
@@ -161,6 +179,36 @@ class UserScopeGrant(Base):
     __table_args__ = (
         # 权限解析要按 user_id 取授权列表，建索引免得每次全表扫
         Index("ix_user_scope_grants_user_id", "user_id"),
+    )
+
+
+class KnowledgeBase(Base):
+    """知识库表（V0.1 · T21）。字段见 docs/data-model.md 2.2。
+
+    ★ default_scope 是"新文档默认可见范围"（spec.md Q-01，本项目定为 internal）：
+      上传时不显式传 scope 就取本值。它只做默认值，不做权限判定
+      （判定仍在 chunks.scope_key + kb_id 两条件 SQL 里，R2）。
+    ★ strategy_id 本版只留列不启用（V1 绑 RAG 策略，data-model 2.2 标注 V1）。
+    """
+
+    __tablename__ = "knowledge_bases"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    default_scope: Mapped[str] = mapped_column(
+        Text, nullable=False, default="internal"
+    )
+    strategy_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    created_by: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("users.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_knowledge_bases_name"),
     )
 
 
