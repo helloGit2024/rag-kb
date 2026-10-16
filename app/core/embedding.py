@@ -17,6 +17,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+import time
 
 import httpx
 
@@ -33,6 +34,7 @@ def embed_texts(
     dim: int | None = None,
     batch_size: int = 32,
     timeout_s: float = 120.0,
+    pace_s: float = 0.0,
 ) -> list[list[float]]:
     """批量把文本转成向量（Ollama /api/embed）。
 
@@ -43,6 +45,11 @@ def embed_texts(
         dim: 期望维度，默认读 EMBEDDING_DIM（1024）。
         batch_size: 单次请求批量大小（受内存限制，CPU 推理 32 为保守值）。
         timeout_s: 单批超时。CPU 推理一批 32 条较慢，默认 120s。
+        pace_s: ★ T20 批间让出秒数（默认 0 = 不让出，在线路径行为不变）。
+            大文件入库要连打几十批嵌入，批与批之间不停顿会把共享的推理服务
+            打满几分钟，在线问答的嵌入/生成全部排队（实测提问中位延迟从
+            17.5s 涨到 38.7s）。每批之间 sleep 一个调度窗口，在线请求就能
+            插进来。代价是入库总时长 +（批数 × pace_s），入库走异步无感。
 
     Returns:
         与 texts 等长的向量列表，顺序一一对应。
@@ -65,6 +72,9 @@ def embed_texts(
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]
             vectors.extend(_embed_batch(client, base_url, model, dim, batch))
+            # 最后一批之后不让出——让出的意义是"两批之间的调度窗口"
+            if pace_s > 0 and i + batch_size < len(texts):
+                time.sleep(pace_s)
     return vectors
 
 

@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 from dataclasses import dataclass
 
@@ -50,6 +51,12 @@ from app.services.permission import document_scope_key
 # 分块策略（与 app/services/chunker.py 默认值、V-1 脚本一致）
 CHUNK_SIZE = 512
 CHUNK_OVERLAP = 64
+
+# T20 嵌入批间让出秒数（INGEST_EMBED_PACE_S 可调）：大文件连打几十批嵌入
+# 会把共享推理服务打满，在线问答被迫排队；每批让出一个调度窗口即可缓解。
+# 只作用于入库链路；在线问答的嵌入调用不传此参数（行为不变）。
+# 读环境变量的「单参 getenv + or」写法原因见 embedding.py 注释。
+_INGEST_EMBED_PACE_S = float(os.getenv("INGEST_EMBED_PACE_S") or "0.2")
 
 # 原文对象的 Content-Type 按来源类型区分（与 scripts/store_file.py 同约定）
 _RAW_CONTENT_TYPE = {
@@ -126,7 +133,8 @@ def ingest_document(
         raise IngestError(f"分块结果为空，拒绝入库：{filename}")
 
     # ---- ④ 向量化（调嵌入服务，此刻不持有 DB 事务/行锁）----
-    vectors = embed_texts([c.content for c in chunks])
+    # pace_s：批间让出调度窗口（T20），不抢占在线问答的推理算力
+    vectors = embed_texts([c.content for c in chunks], pace_s=_INGEST_EMBED_PACE_S)
     if len(vectors) != len(chunks):
         # R7：嵌入服务返回值异常必须显式失败，不能按短的截断凑合入库
         raise IngestError(

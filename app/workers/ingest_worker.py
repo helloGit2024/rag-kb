@@ -32,12 +32,22 @@ worker 服务就是这个入口）。
   ★ 退出前会把已弹出的 task_id 退回队列（见 main）：task_id 是"先出队、后处理"，
     不退回就成了"DB 里 pending、队列里没有"的僵尸任务——不报错、永远不动。
     重复投递的安全性由 process_one 的终态幂等守卫保证。
+
+★ 并发信号量（T20，R10「离线任务的并发数用信号量限制」）：
+  process_one 全程在 _INGEST_SEMAPHORE 保护下执行，许可数读
+  INGEST_WORKER_CONCURRENCY（默认 1）。当前主循环是单线程串行，结构上
+  并发就是 1——信号量的价值在于：① R10 与 ops-runbook 明确要求这个实体存在；
+  ② 将来 worker 改多线程消费时，并发上限已有实体、无需再补。
+  ★ 它与嵌入的 pace_s 分工不同：信号量管"worker 同时跑几个任务"，
+    pace_s 管"单个任务内嵌入调用给在线链路留多少调度窗口"。
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 
@@ -69,6 +79,11 @@ TERMINAL_TASK_STATUSES = frozenset({TASK_STATUS_DONE, TASK_STATUS_FAILED})
 # 不等一下就会形成"秒级重启 → 立刻再崩"的风暴，把日志刷爆并白烧 CPU
 _CRASH_BACKOFF_S = 2.0
 
+# T20 并发信号量（R10）。「单参 getenv + or」写法原因见 embedding.py 注释。
+_INGEST_SEMAPHORE = threading.BoundedSemaphore(
+    int(os.getenv("INGEST_WORKER_CONCURRENCY") or "1")
+)
+
 
 def _log(event: str, **fields: object) -> None:
     """worker 侧的结构化日志（与 qa.py 的 event=qa 同风格，落 stderr）。"""
@@ -88,6 +103,13 @@ def process_one(session, task_id: int) -> None:
         session: 调用方提供的 Session（事务边界在本函数内：成功/失败都 commit）。
         task_id: 队列里取出的任务 id。
     """
+    # T20：全程持有并发信号量（R10），上限见 _INGEST_SEMAPHORE
+    with _INGEST_SEMAPHORE:
+        _process_one_guarded(session, task_id)
+
+
+def _process_one_guarded(session, task_id: int) -> None:
+    """process_one 的本体（并发上限由外层信号量保证）。"""
     task = get_task(session, task_id)
     if task.status in TERMINAL_TASK_STATUSES:
         # 幂等守卫：主循环在崩溃时会把同一个 task_id 重新入队（见 main），
