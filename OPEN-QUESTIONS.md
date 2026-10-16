@@ -22,8 +22,9 @@ _（暂无。自动汇总标了 5 处"可能阻塞"，见下方 🤖 区，人�
 | 5 | **400 级错误码只有 `QUESTION_INVALID` 一个**：T21 的知识库参数校验（非法 scope / 字段超长）也复用它，`code` 被拉伸成"任何入参不合法"。T21 的兜底是让 `RequestValidationError` 处理器**按路径分流文案**（`/api/v1/query` → 问题参数说明；其他 → 通用"字段缺失或超长"），但 `code` 仍是 `QUESTION_INVALID` | `docs/api-contract.md` §3.3 错误码清单、`app/main.py` | 沿用 T18 处理非法 scope 时的同一妥协；补一个通用入参码（如 `INVALID_PARAMETER`）需同步改 api-contract + openapi | 改的话动 api-contract.md / openapi.yaml 两处 | ⬜ 未决 |
 | 6 | **上传接口未接"知识库默认 scope"**：`docs/openapi.yaml` 说上传不传 scope 时取知识库 `default_scope`，但 `app/api/v1/documents.py` 仍硬编码 `scope=internal`（其代码注释写着"T21 后再换成 kb 默认值"）。接上还要顺带校验 `kb_id` 存在；且 dev 库已有 kb_id=1/2/3 的存量文档而无对应知识库行 | `app/api/v1/documents.py`、`docs/openapi.yaml`（POST /documents） | 保持 T18 已验收行为不变；已与项目所有者确认**单独排任务**（会改 T18 行为 + 需给存量 kb 补数据行，超出 T21"只加 CRUD"范围） | 改的话动 documents.py + 可能需要数据补齐脚本 | ⬜ 未决（已确认单独排任务） |
 | 7 | **T22 未打通 `uploaded_by` 与自定义 `title`**：① documents 行由 worker **异步**创建，上传接口并不知道将来是谁建的（`perm.user_id` 从未进过 worker），故列表 `uploaded_by` 恒为 `null`（契约里是 string）；② 上传不接受契约里的 `title` 表单字段——现有 `title` 由 filename 推得，且 `validate_metadata` 还从 filename 推 `source_type`，要支持自定义 title 必须改 `ingest_document` / worker 签名（T13/T18 已验收链路） | `app/api/v1/documents.py`、`app/services/ingest.py`、`app/workers/ingest_worker.py`、`docs/openapi.yaml` | 与项目所有者确认**合并为同一张后续任务**（两者都要动入库链路，一起改只付一次代价） | 3—4 个文件 + payload 增字段（向后兼容） | ⬜ 未决（已确认单独排任务） |
-| 8 | **`DELETE` 的鉴权口径两条通道不一致**：`DELETE /documents/{id}` 校可见范围（不在范围内返 404），而 `DELETE /knowledge-bases/{id}` 只校验身份（T21 口径）。两者都是删除不可逆操作 | `app/api/v1/documents.py`、`app/api/v1/knowledge_bases.py` | T22 方案阶段与项目所有者确认"删除文档校可见范围"；T21 时未讨论该问题。建议 V0.1 收尾前统一为"校范围" | 改 T21 侧需同步改 `tests/test_kb_crud.py` 的用例 | ⬜ 未决 |
-| 9 | **文档列表信封不含 `page` / `page_size`**：契约如此（`docs/openapi.yaml` L263—274，与知识库列表 L185—190 不同），T22 按契约实现，前端分页组件需自己保留页码状态 | `docs/openapi.yaml`、`app/schemas/documents.py` | 按契约实现，**仅备案**；若前端需要回显页码，需先改契约 | 改的话动 openapi + schema 两处 | ⬜ 未决（仅备案） |
+| 8 | **文档列表信封不含 `page` / `page_size`**：契约如此（`docs/openapi.yaml` L263—274，与知识库列表 L185—190 不同），T22 按契约实现，前端分页组件需自己保留页码状态 | `docs/openapi.yaml`、`app/schemas/documents.py` | 按契约实现，**仅备案**；若前端需要回显页码，需先改契约 | 改的话动 openapi + schema 两处 | ⬜ 未决（仅备案） |
+
+> 原第二节 #8（DELETE 文档校范围 vs DELETE 知识库不校范围）已于 2026-10-16 裁决并移入第三节 #15。
 
 > ~~**这条与第一条性质不同**~~（第一条已决，保留原文备查）：kb 轴是**功能缺口**（影响权限隔离的正确性），脚本缺失是**维护流程缺口**（影响清单能否持续更新）。前者必须在 T17b 补上，后者可以暂缓 —— 暂缓的代价只是下次清单更新时要记得手工同步 🤖 区，不会造成线上风险。
 
@@ -45,6 +46,7 @@ _（暂无。自动汇总标了 5 处"可能阻塞"，见下方 🤖 区，人�
 | 12 | T22 列表的 `status` 查询参数按什么校验？ | **严格按 `openapi.yaml` 六态**（pending/parsing/chunking/embedding/done/failed），非法值 400、空白串视同不传；不顺从实现的真实分布（实际只会出现 `done`，其余五态为 V1 预留） | 与项目所有者确认（T22 方案阶段 AskUserQuestion 选"严格按 openapi 六态"） | 2026-10-16 |
 | 13 | T22 `uploaded_by` 要不要本任务一并打通？ | **否**——列表暂返回 `null`；（documents 行由 worker 异步创建，上传接口不知道将来是谁建的）。与自定义 `title` 合并为同一张后续任务（见第二节 #7） | 与项目所有者确认（T22 方案阶段 AskUserQuestion 选"暂返回 null，另排任务"） | 2026-10-16 |
 | 14 | T22 删除文档的"级联清理"做到哪一步？ | **级联三步**：删对象存储 → 真删 `chunks` → `documents` 软删（行保留）；缓存失效与审计日志留 V1（与 T21 知识库删除同口径） | 与项目所有者确认（T22 方案阶段 AskUserQuestion 选"级联三步"） | 2026-10-16 |
+| 15 | 原 #8：`DELETE /knowledge-bases/{id}`（T21 只校身份）与 `DELETE /documents/{id}`（T22 校可见范围）删除口径不一致，如何统一？ | **统一为"校可见范围"**：DELETE 知识库按 `kb.default_scope ∈ scope_keys` 且（`kb_ids` 为空 或 `kb.id ∈ kb_ids`）两轴校验——与文档可见性同构（default_scope 就是"这个 KB 默认给谁看"）；不在范围内返回 **404**（不是 403）。保守方向：KB 里可能存在你看不见的文档，看不见就不该删。**PATCH / GET 单个不连带统一**（列表已决"列全部"，见三节 #9），后续再议 | 与项目所有者确认（AskUserQuestion：两轴同构 / 只动 DELETE / fix(kb)）；验证：`make test` 184 passed（新增越权 404 × 2、kb 轴 404+对照组、空 scope ValueError、API 层 404 共 5 条负例/对照）+ 真机 e2e（dept: KB 被 internal 用户删 → 404；internal KB → 204 → 重复 404） | 2026-10-16 |
 
 ## 四、这张清单怎么用
 
