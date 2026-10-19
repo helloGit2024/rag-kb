@@ -125,3 +125,42 @@ export interface DocumentListOut {
   items: DocumentOut[];
   total: number;
 }
+
+// ── 问答（T27）─────────────────────────────────────────────────────
+// 契约：POST /api/v1/query（docs/openapi.yaml L55—120）+ QueryResult /
+// Citation schema（L1125—1149 / L1319—1332）。字段名照抄，不自行发明。
+// ★ 后端 V-1 未实现 kb_ids（app/schemas/query.py 注释：属 V2，既不声明也
+//   不静默忽略）——故此处请求体不带 kb_ids，页面也不做知识库选择器。
+//   做了就是"声明了却无效"的假接口。
+export interface Citation {
+  index: number; // 与答案中的 [1][2] 编号严格对应
+  doc_id: number;
+  doc_title: string;
+  chunk_id: number;
+  char_start: number;
+  char_end: number;
+  snippet: string; // 原文片段——引用卡片展开后显示的就是它
+  score: number;
+}
+
+export interface QueryResult {
+  answer: string;
+  refused: boolean; // true = 库里无相关内容，已拒答（HTTP 仍为 200）
+  degraded: boolean;
+  citations: Citation[];
+  latency_ms: number;
+  retrieve_ms?: number | null;
+  generate_ms?: number | null;
+  model_used?: string | null;
+}
+
+/** 知识库问答（契约：POST /api/v1/query）。V0.1 非流式，要等完整结果返回。 */
+export function askQuestion(question: string, topK?: number) {
+  const body: { question: string; top_k?: number } = { question };
+  if (topK !== undefined) body.top_k = topK;
+  return apiFetch<QueryResult>("/api/v1/query", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}

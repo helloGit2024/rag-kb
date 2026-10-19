@@ -32,7 +32,7 @@ export default function RootLayout({
               <Link href="/" className="font-semibold">
                 企业知识库
               </Link>
-              {/* V0.1 三页：知识库列表（首页 /，T25）/ 文档上传 / 问答（T27 待建） */}
+              {/* V0.1 三页：知识库列表（首页 /，T25）/ 文档上传（T26）/ 问答（/chat，T27） */}
               <Link
                 href="/"
                 className="text-sm text-muted-foreground hover:text-foreground"
@@ -44,6 +44,12 @@ export default function RootLayout({
                 className="text-sm text-muted-foreground hover:text-foreground"
               >
                 文档上传
+              </Link>
+              <Link
+                href="/chat"
+                className="text-sm text-muted-foreground hover:text-foreground"
+              >
+                问答
               </Link>
             </nav>
             <IdentitySwitcher />
