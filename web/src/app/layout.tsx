@@ -17,12 +17,15 @@ export default function RootLayout({
   // 用系统字体栈替代 next/font/google 的 Geist。
   //
   // suppressHydrationWarning：浏览器扩展（如"通义"）会在 React hydration
-  // 之前给 <html> 注入 className/data-theme/style，导致属性比对不一致报
-  // hydration mismatch。该属性让 React 跳过本元素的属性比对（只影响这一层，
-  // 不掩盖子组件的真实错配），是 Next.js 官方对这一场景的推荐处理。
+  // 之前给文档骨架注入属性——已确认它会改 <html>（className/data-theme/
+  // style），而同类扩展也常给 <body> 加 class。属性不一致会让 React 报
+  // hydration mismatch。
+  // ★ html 与 body **各加一次**：该属性只让 React 跳过"本元素自身"的属性
+  //   比对，不递归到子元素——所以它不会掩盖子组件的真实错配，只挡掉扩展
+  //   在骨架上的注入。这是 Next.js 官方对这一场景的推荐处理。
   return (
     <html lang="zh-CN" suppressHydrationWarning>
-      <body className="antialiased">
+      <body className="antialiased" suppressHydrationWarning>
         <header className="border-b">
           <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-4">
             <nav className="flex items-center gap-6">
