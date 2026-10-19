@@ -50,7 +50,9 @@ from app.repos.task_repo import (
     mark_failed,
     mark_running,
 )
+from app.services import ingest as ingest_mod
 from app.services.permission import PermissionBundle
+from app.workers import ingest_worker
 
 
 # ── 内存版 Redis（只实现本测试用到的 lpush/brpop）────────────────────
@@ -378,6 +380,125 @@ class TestUploadApi:
             assert resp.json()["error"]["code"] == "UNAUTHENTICATED"
         finally:
             app.dependency_overrides.clear()
+
+
+# ── T22b：同文件重复上传竞态 ─────────────────────────────────────────
+class TestDuplicateUploadRace:
+    """同一文件在 worker 建行前连提两次，最终只入库一行（T22b）。
+
+    ★ 为什么 mock 存储与嵌入：本测试验证的是"并发上传 → worker 消费 → 只落一行"
+      的语义，不是嵌入/对象存储的正确性（那是 T13/test_ingest.py 的验收）。
+      用假向量 + 假存储可以让它跑在纯 DB 环境，不依赖 Ollama / silo。
+    ★ 为什么手动跑 process_one：上传接口的 fake enqueue 只记录 task_id，
+      不会真触发 worker——我们需要精确控制两个任务的执行顺序。
+    """
+
+    @pytest.fixture()
+    def client(self, engine: Engine) -> Iterator[TestClient]:
+        eng = engine
+        enqueued: list[int] = []
+
+        def _override_session() -> Iterator[Session]:
+            with Session(eng) as session:
+                yield session
+
+        app.dependency_overrides[get_session] = _override_session
+        app.dependency_overrides[_require_user_permission] = lambda: PermissionBundle(
+            scope_keys=["internal"]
+        )
+        # MinIO / Redis 不打真实服务（同 TestUploadApi）
+        import app.api.v1.documents as documents_mod
+
+        documents_mod.ensure_bucket = lambda **_: "ragkb"  # type: ignore[attr-defined]
+        documents_mod.put_bytes = lambda *a, **k: a[0]  # type: ignore[attr-defined]
+        documents_mod.enqueue_ingest = lambda task_id: enqueued.append(task_id)  # type: ignore[attr-defined]
+        try:
+            with TestClient(app) as c:
+                c.enqueued_task_ids = enqueued  # type: ignore[attr-defined]
+                yield c
+        finally:
+            app.dependency_overrides.clear()
+            documents_mod.ensure_bucket = __import__(
+                "app.core.storage", fromlist=["ensure_bucket"]
+            ).ensure_bucket  # type: ignore[attr-defined]
+            documents_mod.put_bytes = __import__(
+                "app.core.storage", fromlist=["put_bytes"]
+            ).put_bytes  # type: ignore[attr-defined]
+            documents_mod.enqueue_ingest = _real_enqueue  # type: ignore[attr-defined]
+
+    def test_same_file_uploaded_twice_lands_only_one_row(
+        self,
+        client: TestClient,
+        engine: Engine,
+        kb_id: int,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """同一文件连传两次：上传端都 202，worker 都消费完，库里只有一行文档。
+
+        覆盖两条防线：
+        - 第一次上传：正常入库（status=done）；
+        - 第二次上传：worker 查重命中 → DuplicateIngestError → 复用已有 doc_id；
+          即使并发到达，还有 DB 部分唯一索引兜底
+          （IntegrityError 同样转 DuplicateIngestError）。
+        """
+        content = "# T22b race\n\n同一文件连传两次，最终只入库一行。".encode()
+        filename = f"{_TEST_TAG}-race.md"
+
+        # ① 上传两次，接口都返回 202（因为此时 documents 行还没建）
+        resp1 = client.post(
+            "/api/v1/documents",
+            files={"file": (filename, content, "text/markdown")},
+            data={"kb_id": str(kb_id)},
+        )
+        assert resp1.status_code == 202, resp1.text
+        task1 = resp1.json()["task_id"]
+
+        resp2 = client.post(
+            "/api/v1/documents",
+            files={"file": (filename, content, "text/markdown")},
+            data={"kb_id": str(kb_id)},
+        )
+        assert resp2.status_code == 202, resp2.text
+        task2 = resp2.json()["task_id"]
+        assert task1 != task2
+
+        # ② mock 嵌入与对象存储（本测试不验嵌入正确性，只验"只落一行"）
+        monkeypatch.setattr(ingest_worker, "get_bytes", lambda key: content)
+        monkeypatch.setattr(ingest_mod, "ensure_bucket", lambda: None)
+        monkeypatch.setattr(ingest_mod, "put_text", lambda *a, **k: None)
+        monkeypatch.setattr(ingest_mod, "delete_prefix", lambda p: 0)
+        monkeypatch.setattr(
+            ingest_mod,
+            "embed_texts",
+            lambda texts, pace_s=0.0: [[0.0] * 1024 for _ in texts],
+        )
+
+        # ③ worker 依次消费两个任务
+        with Session(engine) as session:
+            ingest_worker.process_one(session, task1)
+        with Session(engine) as session:
+            ingest_worker.process_one(session, task2)
+
+        # ④ 断言：任务都 done 且指向同一个 doc_id；documents 只有一行
+        with Session(engine) as session:
+            t1 = get_task(session, task1)
+            t2 = get_task(session, task2)
+            assert t1.status == TASK_STATUS_DONE
+            assert t2.status == TASK_STATUS_DONE
+            assert t1.doc_id is not None
+            assert t2.doc_id == t1.doc_id
+
+            # 库里只有一行活跃文档
+            from sqlalchemy import func, select
+
+            from app.repos.models import Document
+
+            doc_count = session.scalar(
+                select(func.count())
+                .select_from(Document)
+                .where(Document.kb_id == kb_id, Document.is_active.is_(True))
+            )
+            assert doc_count == 1
 
 
 # ── 集成：任务状态查询接口（T23；纯读库，MinIO/Redis 均不触碰）────────

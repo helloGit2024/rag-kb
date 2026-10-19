@@ -31,6 +31,7 @@ import os
 import uuid
 from dataclasses import dataclass
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.embedding import embed_texts
@@ -42,9 +43,9 @@ from app.core.storage import (
     raw_key,
 )
 from app.repos.chunk_repo import ChunkInsert, insert_chunks
-from app.repos.document_repo import insert_document
+from app.repos.document_repo import find_active_by_md5, insert_document
 from app.services.chunker import chunk_text
-from app.services.file_validator import ensure_not_duplicate, validate_metadata
+from app.services.file_validator import validate_metadata
 from app.services.md_parser import parse_markdown
 from app.services.permission import document_scope_key
 
@@ -67,6 +68,19 @@ _RAW_CONTENT_TYPE = {
 
 class IngestError(RuntimeError):
     """入库编排期的显式失败（R7：抛出异常，不静默返回半成品）。"""
+
+
+class DuplicateIngestError(IngestError):
+    """入库时发现同 kb 内已有相同 md5 的活跃文档（T22b）。
+
+    与 FileValidationError(DUPLICATE_FILE) 不同：那是上传端的同步拒绝（409），
+    本异常是 worker 侧的优雅复用——worker 捕获后把任务标 done 并回写已有
+    doc_id，不重试、不标 failed（同一文件连提两次只入库一行）。
+    """
+
+    def __init__(self, doc_id: int) -> None:
+        self.doc_id = doc_id
+        super().__init__(f"同知识库内已存在相同文件（doc_id={doc_id}）")
 
 
 @dataclass(frozen=True)
@@ -103,11 +117,18 @@ def ingest_document(
     Raises:
         FileValidationError: 类型 / 大小 / 去重校验失败（T12），含契约错误码。
         ScopeError: scope 取值不在白名单内（T14）。
+        DuplicateIngestError: 同 kb 已有相同 md5 的活跃文档（T22b）。
         IngestError: 非 UTF-8 编码、解析或分块为空、向量数与分块数不一致。
     """
     # ---- ① 校验 + 去重（只读，无写入；尽早失败）----
     validated = validate_metadata(filename, data)
-    ensure_not_duplicate(session, kb_id=kb_id, file_md5=validated.file_md5)
+    # T22b：worker 侧二次查重。即使上传端已判 409，并发窗口下仍可能同时到达。
+    # 命中 → 优雅复用已有文档（worker 把它标 done），不重复入库。
+    existing_doc_id = find_active_by_md5(
+        session, kb_id=kb_id, file_md5=validated.file_md5
+    )
+    if existing_doc_id is not None:
+        raise DuplicateIngestError(existing_doc_id)
 
     # scope → scope_key（T14 文档侧推导）。放在写任何东西之前：
     # 非法 scope 必须在这里失败，绝不写入越权的 documents/chunks
@@ -181,6 +202,15 @@ def ingest_document(
             ],
         )
         session.commit()
+    except IntegrityError as exc:
+        # T22b 兜底：并发下另一个 worker 已同时完成插入，部分唯一索引冲突。
+        # 回滚后回查已有 doc_id，让上层复用，不重试、不标 failed。
+        session.rollback()
+        existing = find_active_by_md5(session, kb_id=kb_id, file_md5=validated.file_md5)
+        if existing is not None:
+            raise DuplicateIngestError(existing) from exc
+        # 不是 md5 重复，而是其他约束冲突——按原样抛出
+        raise
     except Exception as exc:
         session.rollback()
         try:

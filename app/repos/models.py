@@ -29,6 +29,7 @@ from sqlalchemy import (
     Integer,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -81,6 +82,18 @@ class Document(Base):
         nullable=False,
         default=datetime.utcnow,
         onupdate=datetime.utcnow,
+    )
+
+    __table_args__ = (
+        # T22b：同 kb 内活跃文档的 (kb_id, file_md5) 唯一索引，
+        # 防止并发 worker 同时插入两行重复文档（竞态兜底）
+        Index(
+            "uq_documents_kb_md5_active",
+            "kb_id",
+            "file_md5",
+            unique=True,
+            postgresql_where=text("is_active = true"),
+        ),
     )
 
 

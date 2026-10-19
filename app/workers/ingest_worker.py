@@ -69,7 +69,7 @@ from app.repos.task_repo import (
     mark_pending_for_retry,
     mark_running,
 )
-from app.services.ingest import ingest_document
+from app.services.ingest import DuplicateIngestError, ingest_document
 from app.services.task_failure import human_reason
 
 # 终态：任务生命周期已结束，重放不应改变它（幂等守卫用，见 process_one）
@@ -144,6 +144,32 @@ def _process_one_guarded(session, task_id: int) -> None:
             data=data,
             scope=payload.get("scope") or "internal",
         )
+    except DuplicateIngestError as exc:
+        # T22b：同文件已在并发/连点场景下被另一个任务入库。优雅复用——
+        # 任务标 done、doc_id 指向已存在的那一行，不重试、不标 failed。
+        session.rollback()
+        mark_done(session, task_id, doc_id=exc.doc_id)
+        session.commit()
+        try:
+            delete_object(payload["staging_key"])
+        except Exception as cleanup_exc:
+            # 暂存删不掉不影响终态（复用的是已有正式文档），记日志即可
+            _log(
+                "ingest_task",
+                task_id=task_id,
+                status="done",
+                doc_id=exc.doc_id,
+                staging_cleanup=f"failed: {cleanup_exc}",
+            )
+            return
+        _log(
+            "ingest_task",
+            task_id=task_id,
+            status="done",
+            doc_id=exc.doc_id,
+            reason="duplicate_reuse",
+        )
+        return
     except Exception as exc:
         # 这一份文件的问题（坏文件 / 非 UTF-8 / 嵌入服务挂了……）：
         # SQL 事务先回滚（ingest 内部可能已写过半成品），再由 _handle_failure

@@ -89,7 +89,7 @@ class TestIngestPassesPace:
         # 全链路其他环节全部 stub：本测试只关心"嵌入调用带没带 pace_s"
         monkeypatch.setattr(ingest_mod, "embed_texts", fake_embed)
         monkeypatch.setattr(
-            ingest_mod, "ensure_not_duplicate", lambda *a, **k: None
+            ingest_mod, "find_active_by_md5", lambda *a, **k: None
         )
         monkeypatch.setattr(ingest_mod, "ensure_bucket", lambda: None)
         monkeypatch.setattr(ingest_mod, "put_text", lambda *a, **k: None)
