@@ -29,7 +29,13 @@ export default function RootLayout({
               <Link href="/" className="font-semibold">
                 企业知识库
               </Link>
-              {/* V0.1 三页：知识库列表（T25 待建）/ 文档上传 / 问答（T27 待建） */}
+              {/* V0.1 三页：知识库列表（首页 /，T25）/ 文档上传 / 问答（T27 待建） */}
+              <Link
+                href="/"
+                className="text-sm text-muted-foreground hover:text-foreground"
+              >
+                知识库
+              </Link>
               <Link
                 href="/documents"
                 className="text-sm text-muted-foreground hover:text-foreground"

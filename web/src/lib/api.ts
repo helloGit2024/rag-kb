@@ -72,6 +72,32 @@ export interface KnowledgeBase {
 export interface KbListOut {
   items: KnowledgeBase[];
   total: number;
+  // 契约里列表信封含 page / page_size（docs/openapi.yaml L184—189），
+  // 拿来做分页；缺了它超过一页的部分会被页面静默截断。
+  page: number;
+  page_size: number;
+}
+
+export interface KbCreateIn {
+  name: string;
+  description?: string;
+  default_scope?: string;
+}
+
+/** 知识库列表（契约：GET /api/v1/knowledge-bases，page 从 1 起）。 */
+export function listKnowledgeBases(page = 1, pageSize = 20) {
+  return apiFetch<KbListOut>(
+    `/api/v1/knowledge-bases?page=${page}&page_size=${pageSize}`,
+  );
+}
+
+/** 创建知识库（契约：POST /api/v1/knowledge-bases → 201；重名 409）。 */
+export function createKnowledgeBase(body: KbCreateIn) {
+  return apiFetch<KnowledgeBase>("/api/v1/knowledge-bases", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 export interface TaskStatus {

@@ -38,6 +38,7 @@ import { useIdentityChange } from "@/components/identity-switcher";
 import {
   ApiError,
   apiFetch,
+  listKnowledgeBases,
   type DocumentListOut,
   type KbListOut,
   type TaskStatus,
@@ -74,7 +75,10 @@ export default function DocumentsPage() {
 
   const loadKbs = useCallback(async () => {
     try {
-      const data = await apiFetch<KbListOut>("/api/v1/knowledge-bases");
+      // 走 api.ts 的统一封装（T25 抽出），不在页面里手写接口路径。
+      // ★ 只取第 1 页 20 个（契约默认）：V0.1 知识库数量远小于一页，
+      //   够用；若将来超过一页，这个下拉会漏掉后面的库，届时再补搜索。
+      const data = await listKnowledgeBases();
       setKbs(data);
       setPageError("");
     } catch (e) {
