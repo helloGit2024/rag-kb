@@ -61,7 +61,7 @@
 | T18 | Redis 任务队列 + worker 进程 ✅ **已完成**（e2e：上传 0.19—0.39s 返回 task_id、worker 消费至 done 并回写 doc_id；`make test` 116 passed，2026-10-15） | T13 | 上传接口 500ms 内返回 task_id | 我能验收 |
 | T19 | 任务状态推进 + 失败重试 3 次 + 失败原因落库 ✅ **已完成**（e2e：坏文件 → `failed` + `retry_count=3` + 人话 `error_reason`"文件不是 UTF-8 编码…建议：…（已自动重试 3 次仍失败）"；另补"崩溃不丢任务 + 终态幂等守卫"；`make test` 133 passed，2026-10-16） | T18 | 上传坏文件，状态变 failed 且 `error_reason` 是**人话** | **我能验收** |
 | T20 | worker 并发信号量（不抢占在线算力） ✅ **已完成**（e2e：520KB 中文 txt 入库中提问——改前中位 17.5→38.7s / 峰值 58.3s；改后中位 24.2s、峰值 25.3s，落回无入库基线波动区间 8—27s。两个机制：① 嵌入批间让出 `pace_s`（入库 0.2s、在线默认 0）② `BoundedSemaphore` 并发上限（`INGEST_WORKER_CONCURRENCY` 默认 1）。`make test` 139 passed，2026-10-16） | T18 | 边上传大文件边提问，提问延迟不显著上升 | 我能验收 |
-| T18b | **上传接口接"知识库默认 scope" + 校验 `kb_id` 存在**（T21 期间发现的缺口；编号带 b 沿用 T17b 先例以免打乱既有编号） | T18,T21 | 上传不传 `scope` 时取该 KB 的 `default_scope`（不再是硬编码 `internal`）；`kb_id` 不存在 → 404；给 dev 库存量 kb 1/2/3 补知识库数据行；`make test` 全绿 | **我能验收** |
+| T18b | **上传接口接"知识库默认 scope" + 校验 `kb_id` 存在**（T21 期间发现的缺口；编号带 b 沿用 T17b 先例以免打乱既有编号）✅ **已完成**（2026-10-19：`app/services/kb.py` 新增 `resolve_upload_scope`——不传/空白 scope 取 kb `default_scope`、显式 scope 过白名单（400，先于 kb 查找保持 T18 行为）、kb 不存在 → 404 `NOT_FOUND`；`scripts/seed_kbs.py` 幂等补齐 dev 库 kb 1/2/3（显式 id + setval 序列保护，kb1 演示知识库/internal、kb2 研发部知识库/dept:研发部、kb3 研发部知识库二/dept:研发部）；e2e：kb 999999 → 404，bob 传 kb 3 不传 scope → 落库 `dept:研发部`；`make test` 211 passed +7） | T18,T21 | 上传不传 `scope` 时取该 KB 的 `default_scope`（不再是硬编码 `internal`）；`kb_id` 不存在 → 404；给 dev 库存量 kb 1/2/3 补知识库数据行；`make test` 全绿 | **我能验收** |
 
 > **T18b 的背景**（详见 `OPEN-QUESTIONS.md` 第二节 #6）：
 > `docs/openapi.yaml` 说上传不传 scope 时取知识库 `default_scope`，
