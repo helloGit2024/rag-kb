@@ -135,6 +135,29 @@ services:
       backend:
         condition: service_started
 
+  # 前端（V0.1 · T26）：Next.js 15 dev server。
+  # ★ node_modules 不从宿主挂载（宿主/容器 glibc 与可选依赖不同会坏），
+  #   起容器时 npm install 一次（有 package-lock 缓存层，非首次秒过）。
+  #   源码挂载 + dev 模式 = 宿主改代码即时生效。
+  frontend:
+    image: node:22
+    container_name: ragkb-frontend
+    working_dir: /web
+    environment:
+      # 容器网络内直达 backend 服务名；宿主跑 npm run dev 时不需要它
+      BACKEND_ORIGIN: http://backend:8000
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./web:/web
+      # 匿名卷保住容器内装好的 node_modules，不被宿主空目录覆盖
+      - web_node_modules:/web/node_modules
+    command: sh -c "npm install --no-audit --no-fund && npm run dev"
+    depends_on:
+      backend:
+        condition: service_started
+
 volumes:
   pgdata:
   silodata:
+  web_node_modules:
