@@ -20,6 +20,7 @@ import httpx
 
 from app.core.llm_gateway import chat
 from app.repos.chunk_repo import ChunkHit
+from app.services.pii import redact_pii
 
 # R5：拒答必须且仅输出这一句，结构化字段置 refused=true
 REFUSAL_TEXT = "根据现有资料，我无法回答这个问题。"
@@ -133,6 +134,11 @@ def generate_answer(
             file=sys.stderr,
         )
 
+    # T24 输出侧脱敏（兜底）：输入侧已保证模型没见过完整 PII，
+    # 这里再脱一遍防模型拼接/变体改写；拒答分支不受影响（固定句式无 PII）。
+    # 在 R6 校验之前脱：掩码头尾数字是原文子串，_unverifiable_numbers 不误判。
+    raw = redact_pii(raw)
+
     # R6 + rag-core「生成」规则：答案里的数字必须在被引原文中逐字出现，
     # 否则按可疑处理并拒答——改写数字比答不出来严重得多。
     # （严重度已由项目所有者确认：V-1 即按拒答处理，不降为仅告警。）
@@ -170,10 +176,14 @@ def _render_prompt(question: str, hits: list[ChunkHit]) -> str:
 
 
 def _build_context(hits: list[ChunkHit]) -> str:
-    """把命中块编成带编号的资料，编号 [1]..[k] 与 citations.index 严格对应。"""
+    """把命中块编成带编号的资料，编号 [1]..[k] 与 citations.index 严格对应。
+
+    ★ 进模型前先脱敏（T24 / constraints.md 数据合规"这条最硬"）：
+      模型只接收脱敏后的片段，物理上不可能输出完整 PII。
+    """
     blocks = []
     for i, h in enumerate(hits, start=1):
-        blocks.append(f"[{i}]（来源：《{h.doc_title}》）\n{h.content}")
+        blocks.append(f"[{i}]（来源：《{h.doc_title}》）\n{redact_pii(h.content)}")
     return "\n\n".join(blocks)
 
 
@@ -198,7 +208,7 @@ def _bind_citations(answer: str, hits: list[ChunkHit]) -> list[Citation]:
             chunk_id=h.chunk_id,
             char_start=h.char_start,
             char_end=h.char_end,
-            snippet=h.content[:_SNIPPET_MAX],
+            snippet=redact_pii(h.content[:_SNIPPET_MAX]),
             score=h.score,
         )
     return list(bound.values())
