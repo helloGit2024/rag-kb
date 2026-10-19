@@ -70,6 +70,16 @@
 | T22 | 文档列表 / 上传 / 删除接口（3 个）✅ **已完成**（上传 T18 已交付 202 + task_id；T22 补列表与删除。e2e：401 → 有权限列表 200（信封 `items/total`，`chunk_count=2`）→ 无权限用户 `total=0` → `status=embedding2` 400 → `page=0` 400 → 无权限删除 404 → 有权限删除 204 → 重复删除 404；删除后核验 chunks 0 行、`is_active=false`、MinIO 前缀对象 0 个；`make test` 180 passed，2026-10-16） | T13,T18 | 上传返回 202 + task_id | 我能验收 |
 | T23 | 任务状态查询接口 ✅ **已完成**（e2e：上传 202 → T+0 `pending`/progress 0/`doc_id` null → T+8s `done`/`doc_id` 回写/progress 100 → 不存在任务 404 → 无身份 401；响应不含 payload；`make test` 189 passed，2026-10-19） | T19 | 轮询能看到 pending→done | 我能验收 |
 | T24 | 输出过滤（PII 脱敏） ✅ **已完成**（双点脱敏：进模型前 `_build_context` + 出系统前答案与 snippet 兜底；手机号+身份证保长掩码，银行卡暂缓备案。e2e：含 `13812345678` 的文档 → 答案「…电话 138\*\*\*\*5678…」`refused=false`，answer 与全部 snippet 零完整号码泄露、掩码均出现；`make test` 204 passed，2026-10-19） | T07 | 含手机号的文档被引用时，输出已脱敏 | 我能验收 |
+| T22b | **同文件重复上传竞态修复**（T26 e2e 发现，编号带 b 沿用 T17b 先例以免打乱既有编号） | T22,T18 | 同一文件在 worker 建行前**连提两次**，最终**只入库一行**（或第二次直接 409）；有回归测试覆盖"连提两次"场景；`make test` 全绿 | **我能验收** |
+
+> **T22b 的背景与修复方向**（详见 `OPEN-QUESTIONS.md` 第二节 #12）：
+> `POST /documents` 的重名判重（409）查的是"该 KB 下已有同名有效文档"，
+> 但 documents 行由 worker **异步**创建 —— worker 建行前再传一次，
+> 两次都判为不重名、都 202、最终入库两行。
+> 修复方向二选一（实施前再定）：① worker 侧落 documents 行前按
+> `(kb_id, title, is_active)` 二次查重，命中则复用/跳过；
+> ② 上传端对 `(kb_id, file_md5)` 建唯一约束（R8：先加字段后约束，需迁移）。
+> ★ 涉及上传链路 + worker + 可能加 DB 约束，属高风险改动，动手前先切分支。
 
 ### 2.5 前端（只做 3 个页面）
 
