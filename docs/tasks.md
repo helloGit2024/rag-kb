@@ -61,6 +61,13 @@
 | T18 | Redis 任务队列 + worker 进程 ✅ **已完成**（e2e：上传 0.19—0.39s 返回 task_id、worker 消费至 done 并回写 doc_id；`make test` 116 passed，2026-10-15） | T13 | 上传接口 500ms 内返回 task_id | 我能验收 |
 | T19 | 任务状态推进 + 失败重试 3 次 + 失败原因落库 ✅ **已完成**（e2e：坏文件 → `failed` + `retry_count=3` + 人话 `error_reason`"文件不是 UTF-8 编码…建议：…（已自动重试 3 次仍失败）"；另补"崩溃不丢任务 + 终态幂等守卫"；`make test` 133 passed，2026-10-16） | T18 | 上传坏文件，状态变 failed 且 `error_reason` 是**人话** | **我能验收** |
 | T20 | worker 并发信号量（不抢占在线算力） ✅ **已完成**（e2e：520KB 中文 txt 入库中提问——改前中位 17.5→38.7s / 峰值 58.3s；改后中位 24.2s、峰值 25.3s，落回无入库基线波动区间 8—27s。两个机制：① 嵌入批间让出 `pace_s`（入库 0.2s、在线默认 0）② `BoundedSemaphore` 并发上限（`INGEST_WORKER_CONCURRENCY` 默认 1）。`make test` 139 passed，2026-10-16） | T18 | 边上传大文件边提问，提问延迟不显著上升 | 我能验收 |
+| T18b | **上传接口接"知识库默认 scope" + 校验 `kb_id` 存在**（T21 期间发现的缺口；编号带 b 沿用 T17b 先例以免打乱既有编号） | T18,T21 | 上传不传 `scope` 时取该 KB 的 `default_scope`（不再是硬编码 `internal`）；`kb_id` 不存在 → 404；给 dev 库存量 kb 1/2/3 补知识库数据行；`make test` 全绿 | **我能验收** |
+
+> **T18b 的背景**（详见 `OPEN-QUESTIONS.md` 第二节 #6）：
+> `docs/openapi.yaml` 说上传不传 scope 时取知识库 `default_scope`，
+> 但 `app/api/v1/documents.py` 仍硬编码 `scope=internal`（其代码注释写着
+> "T21 后再换成 kb 默认值"）。★ 接上会**改变 T18 已验收行为**，且 dev 库
+> 已有 kb_id=1/2/3 的存量文档而无对应知识库行，需先补数据，故不塞进 T21。
 
 ### 2.4 生成与接口
 
@@ -71,6 +78,7 @@
 | T23 | 任务状态查询接口 ✅ **已完成**（e2e：上传 202 → T+0 `pending`/progress 0/`doc_id` null → T+8s `done`/`doc_id` 回写/progress 100 → 不存在任务 404 → 无身份 401；响应不含 payload；`make test` 189 passed，2026-10-19） | T19 | 轮询能看到 pending→done | 我能验收 |
 | T24 | 输出过滤（PII 脱敏） ✅ **已完成**（双点脱敏：进模型前 `_build_context` + 出系统前答案与 snippet 兜底；手机号+身份证保长掩码，银行卡暂缓备案。e2e：含 `13812345678` 的文档 → 答案「…电话 138\*\*\*\*5678…」`refused=false`，answer 与全部 snippet 零完整号码泄露、掩码均出现；`make test` 204 passed，2026-10-19） | T07 | 含手机号的文档被引用时，输出已脱敏 | 我能验收 |
 | T22b | **同文件重复上传竞态修复**（T26 e2e 发现，编号带 b 沿用 T17b 先例以免打乱既有编号） | T22,T18 | 同一文件在 worker 建行前**连提两次**，最终**只入库一行**（或第二次直接 409）；有回归测试覆盖"连提两次"场景；`make test` 全绿 | **我能验收** |
+| T22c | **打通 `uploaded_by` 与自定义 `title`**（T22 期间发现的缺口，两项合并为一张任务；编号带字母后缀沿用 T17b 先例） | T22,T18 | ① documents 行的 `uploaded_by` 落真实用户 id（不再是 `null`）；② 上传接受契约里的 `title` 表单字段，不传时仍由 filename 推得；`make test` 全绿 | **我能验收** |
 
 > **T22b 的背景与修复方向**（详见 `OPEN-QUESTIONS.md` 第二节 #12）：
 > `POST /documents` 的重名判重（409）查的是"该 KB 下已有同名有效文档"，
@@ -80,6 +88,15 @@
 > `(kb_id, title, is_active)` 二次查重，命中则复用/跳过；
 > ② 上传端对 `(kb_id, file_md5)` 建唯一约束（R8：先加字段后约束，需迁移）。
 > ★ 涉及上传链路 + worker + 可能加 DB 约束，属高风险改动，动手前先切分支。
+
+> **T22c 的背景**（详见 `OPEN-QUESTIONS.md` 第二节 #7）：
+> ① documents 行由 worker **异步**创建，上传接口不知道将来是谁建的
+> （`perm.user_id` 从未进过 worker），故列表 `uploaded_by` 恒为 `null`
+> （契约里却是 string）；② 上传不接受契约里的 `title` 表单字段 ——
+> 现有 `title` 由 filename 推得，且 `validate_metadata` 还从 filename 推
+> `source_type`，要支持自定义 title 必须改 `ingest_document` / worker 签名。
+> ★ 两项都要动**同一条入库链路**，合并为一张任务一起改，只付一次代价；
+> payload 增字段向后兼容。
 
 ### 2.5 前端（只做 3 个页面）
 
