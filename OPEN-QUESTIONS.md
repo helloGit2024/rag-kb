@@ -23,6 +23,8 @@ _（暂无。自动汇总标了 5 处"可能阻塞"，见下方 🤖 区，人�
 | 6 | **上传接口未接"知识库默认 scope"**：`docs/openapi.yaml` 说上传不传 scope 时取知识库 `default_scope`，但 `app/api/v1/documents.py` 仍硬编码 `scope=internal`（其代码注释写着"T21 后再换成 kb 默认值"）。接上还要顺带校验 `kb_id` 存在；且 dev 库已有 kb_id=1/2/3 的存量文档而无对应知识库行 | `app/api/v1/documents.py`、`docs/openapi.yaml`（POST /documents） | 保持 T18 已验收行为不变；已与项目所有者确认**单独排任务**（会改 T18 行为 + 需给存量 kb 补数据行，超出 T21"只加 CRUD"范围） | 改的话动 documents.py + 可能需要数据补齐脚本 | ⬜ 未决（已确认单独排任务） |
 | 7 | **T22 未打通 `uploaded_by` 与自定义 `title`**：① documents 行由 worker **异步**创建，上传接口并不知道将来是谁建的（`perm.user_id` 从未进过 worker），故列表 `uploaded_by` 恒为 `null`（契约里是 string）；② 上传不接受契约里的 `title` 表单字段——现有 `title` 由 filename 推得，且 `validate_metadata` 还从 filename 推 `source_type`，要支持自定义 title 必须改 `ingest_document` / worker 签名（T13/T18 已验收链路） | `app/api/v1/documents.py`、`app/services/ingest.py`、`app/workers/ingest_worker.py`、`docs/openapi.yaml` | 与项目所有者确认**合并为同一张后续任务**（两者都要动入库链路，一起改只付一次代价） | 3—4 个文件 + payload 增字段（向后兼容） | ⬜ 未决（已确认单独排任务） |
 | 8 | **文档列表信封不含 `page` / `page_size`**：契约如此（`docs/openapi.yaml` L263—274，与知识库列表 L185—190 不同），T22 按契约实现，前端分页组件需自己保留页码状态 | `docs/openapi.yaml`、`app/schemas/documents.py` | 按契约实现，**仅备案**；若前端需要回显页码，需先改契约 | 改的话动 openapi + schema 两处 | ⬜ 未决（仅备案） |
+| 9 | **`GET /tasks/{task_id}` 的 404/401 契约没写**：openapi 该端点只定义了 200 响应，404（任务不存在）与 401（无身份）未定义；T23 按项目惯例实现（404 `NOT_FOUND`、401 `UNAUTHENTICATED`，错误信封一致） | `docs/openapi.yaml` L329—343、`app/api/v1/tasks.py` | 按惯例实现，**仅备案**；下次改 openapi 时补这两个响应定义 | 改的话动 openapi + api-contract 两处 | ⬜ 未决（仅备案） |
+| 10 | **任务状态查询只校身份、不校归属**：`GET /tasks/{task_id}` 挂身份依赖（401），但任何登录用户可查任意 task_id 的进度与失败原因。根因同第二节 #7：`parse_tasks` 无 user 字段，上传时 `perm.user_id` 没进 payload，worker 无从回填归属 | `app/api/v1/tasks.py`、`docs/tasks.md` T23 | **仅备案**：task_id 可枚举但只暴露进度与失败原因，不泄露文档内容；V0.1 内网固定测试账号，风险可接受。**待 #7 那张任务打通 `uploaded_by` 时一并补归属校验**（404 口径，与删除一致） | 改的话动 tasks.py + task payload + openapi 契约 | ⬜ 未决（仅备案，随 #7 复审） |
 
 > 原第二节 #8（DELETE 文档校范围 vs DELETE 知识库不校范围）已于 2026-10-16 裁决并移入第三节 #15。
 
@@ -47,6 +49,8 @@ _（暂无。自动汇总标了 5 处"可能阻塞"，见下方 🤖 区，人�
 | 13 | T22 `uploaded_by` 要不要本任务一并打通？ | **否**——列表暂返回 `null`；（documents 行由 worker 异步创建，上传接口不知道将来是谁建的）。与自定义 `title` 合并为同一张后续任务（见第二节 #7） | 与项目所有者确认（T22 方案阶段 AskUserQuestion 选"暂返回 null，另排任务"） | 2026-10-16 |
 | 14 | T22 删除文档的"级联清理"做到哪一步？ | **级联三步**：删对象存储 → 真删 `chunks` → `documents` 软删（行保留）；缓存失效与审计日志留 V1（与 T21 知识库删除同口径） | 与项目所有者确认（T22 方案阶段 AskUserQuestion 选"级联三步"） | 2026-10-16 |
 | 15 | 原 #8：`DELETE /knowledge-bases/{id}`（T21 只校身份）与 `DELETE /documents/{id}`（T22 校可见范围）删除口径不一致，如何统一？ | **统一为"校可见范围"**：DELETE 知识库按 `kb.default_scope ∈ scope_keys` 且（`kb_ids` 为空 或 `kb.id ∈ kb_ids`）两轴校验——与文档可见性同构（default_scope 就是"这个 KB 默认给谁看"）；不在范围内返回 **404**（不是 403）。保守方向：KB 里可能存在你看不见的文档，看不见就不该删。**PATCH / GET 单个不连带统一**（列表已决"列全部"，见三节 #9），后续再议 | 与项目所有者确认（AskUserQuestion：两轴同构 / 只动 DELETE / fix(kb)）；验证：`make test` 184 passed（新增越权 404 × 2、kb 轴 404+对照组、空 scope ValueError、API 层 404 共 5 条负例/对照）+ 真机 e2e（dept: KB 被 internal 用户删 → 404；internal KB → 204 → 重复 404） | 2026-10-16 |
+| 16 | T23 任务状态查询的鉴权做到哪一层？ | **只校身份（401），不校任务归属**——parse_tasks 无 user 字段，归属模型要动 T18 上传链路（正是第二节 #7 那张任务）；task_id 只泄露进度不泄露内容，V0.1 内网固定测试账号风险可接受。备案见第二节 #10，待 #7 打通 uploaded_by 时一并补归属校验（404 口径） | 与项目所有者确认（T23 方案阶段 AskUserQuestion 选"只校身份"） | 2026-10-19 |
+| 17 | openapi 未定义 `GET /tasks/{task_id}` 的 404/401，怎么处理？ | **按项目惯例实现 + 备案**——404 `NOT_FOUND`、401 `UNAUTHENTICATED`，错误信封一致；不先改契约（改 openapi 需另行确认），备案见第二节 #9 | 与项目所有者确认（T23 方案阶段 AskUserQuestion 选"按惯例实现+备案"） | 2026-10-19 |
 
 ## 四、这张清单怎么用
 
