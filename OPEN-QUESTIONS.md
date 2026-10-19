@@ -25,6 +25,7 @@ _（暂无。自动汇总标了 5 处"可能阻塞"，见下方 🤖 区，人�
 | 8 | **文档列表信封不含 `page` / `page_size`**：契约如此（`docs/openapi.yaml` L263—274，与知识库列表 L185—190 不同），T22 按契约实现，前端分页组件需自己保留页码状态 | `docs/openapi.yaml`、`app/schemas/documents.py` | 按契约实现，**仅备案**；若前端需要回显页码，需先改契约 | 改的话动 openapi + schema 两处 | ⬜ 未决（仅备案） |
 | 9 | **`GET /tasks/{task_id}` 的 404/401 契约没写**：openapi 该端点只定义了 200 响应，404（任务不存在）与 401（无身份）未定义；T23 按项目惯例实现（404 `NOT_FOUND`、401 `UNAUTHENTICATED`，错误信封一致） | `docs/openapi.yaml` L329—343、`app/api/v1/tasks.py` | 按惯例实现，**仅备案**；下次改 openapi 时补这两个响应定义 | 改的话动 openapi + api-contract 两处 | ⬜ 未决（仅备案） |
 | 10 | **任务状态查询只校身份、不校归属**：`GET /tasks/{task_id}` 挂身份依赖（401），但任何登录用户可查任意 task_id 的进度与失败原因。根因同第二节 #7：`parse_tasks` 无 user 字段，上传时 `perm.user_id` 没进 payload，worker 无从回填归属 | `app/api/v1/tasks.py`、`docs/tasks.md` T23 | **仅备案**：task_id 可枚举但只暴露进度与失败原因，不泄露文档内容；V0.1 内网固定测试账号，风险可接受。**待 #7 那张任务打通 `uploaded_by` 时一并补归属校验**（404 口径，与删除一致） | 改的话动 tasks.py + task payload + openapi 契约 | ⬜ 未决（仅备案，随 #7 复审） |
+| 11 | **T24 脱敏范围的两处已知缺口**：① 银行卡暂缓——16—19 位裸数字正则会误伤语料里真实存在的合同号/编号（要避免只能加 Luhn 校验，复杂度不值当，V0.1 不做）；② 18 位纯数字业务编号会被身份证正则掩掉（16 位及以下有数字边界保护、安全；constraints.md 说语料以金额/编号为主，18 位编号概率低但非零） | `app/services/pii.py`（docstring 已写明）、`docs/security.md` 4.3、`docs/constraints.md` L43 | **仅备案**：语料本身不含银行卡（constraints.md L43）；18 位编号误伤的后果是"编号被掩"（不泄露、可用性轻微受损），方向安全。V1 语料扩大时复审（银行卡加 Luhn、编号改白名单） | 改的话只动 pii.py 正则与测试 | ⬜ 未决（仅备案，V1 复审） |
 
 > 原第二节 #8（DELETE 文档校范围 vs DELETE 知识库不校范围）已于 2026-10-16 裁决并移入第三节 #15。
 
@@ -51,6 +52,7 @@ _（暂无。自动汇总标了 5 处"可能阻塞"，见下方 🤖 区，人�
 | 15 | 原 #8：`DELETE /knowledge-bases/{id}`（T21 只校身份）与 `DELETE /documents/{id}`（T22 校可见范围）删除口径不一致，如何统一？ | **统一为"校可见范围"**：DELETE 知识库按 `kb.default_scope ∈ scope_keys` 且（`kb_ids` 为空 或 `kb.id ∈ kb_ids`）两轴校验——与文档可见性同构（default_scope 就是"这个 KB 默认给谁看"）；不在范围内返回 **404**（不是 403）。保守方向：KB 里可能存在你看不见的文档，看不见就不该删。**PATCH / GET 单个不连带统一**（列表已决"列全部"，见三节 #9），后续再议 | 与项目所有者确认（AskUserQuestion：两轴同构 / 只动 DELETE / fix(kb)）；验证：`make test` 184 passed（新增越权 404 × 2、kb 轴 404+对照组、空 scope ValueError、API 层 404 共 5 条负例/对照）+ 真机 e2e（dept: KB 被 internal 用户删 → 404；internal KB → 204 → 重复 404） | 2026-10-16 |
 | 16 | T23 任务状态查询的鉴权做到哪一层？ | **只校身份（401），不校任务归属**——parse_tasks 无 user 字段，归属模型要动 T18 上传链路（正是第二节 #7 那张任务）；task_id 只泄露进度不泄露内容，V0.1 内网固定测试账号风险可接受。备案见第二节 #10，待 #7 打通 uploaded_by 时一并补归属校验（404 口径） | 与项目所有者确认（T23 方案阶段 AskUserQuestion 选"只校身份"） | 2026-10-19 |
 | 17 | openapi 未定义 `GET /tasks/{task_id}` 的 404/401，怎么处理？ | **按项目惯例实现 + 备案**——404 `NOT_FOUND`、401 `UNAUTHENTICATED`，错误信封一致；不先改契约（改 openapi 需另行确认），备案见第二节 #9 | 与项目所有者确认（T23 方案阶段 AskUserQuestion 选"按惯例实现+备案"） | 2026-10-19 |
+| 18 | T24 脱敏范围做到哪几类？ | **手机号 + 身份证**（保长掩码 `138****5678` / `1101**********7758`）；银行卡暂缓（误伤合同编号，见第二节 #11）。**双点脱敏**：进模型前（`_build_context`，constraints.md 数据合规"这条最硬"）+ 出系统前（答案 + snippet 兜底）；答案脱敏放在 R6 数字校验**之前**（掩码头尾数字是原文子串，`_unverifiable_numbers` 不误判）。入库不脱敏（security.md 4.3：保检索质量） | 与项目所有者确认（T24 方案阶段 AskUserQuestion 选"手机号+身份证"）；验证：`make test` 204 passed（+15）+ 真机 e2e（含 13812345678 的文档 → 答案/snippet 零完整号码、掩码出现、refused=false） | 2026-10-19 |
 
 ## 四、这张清单怎么用
 
