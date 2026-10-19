@@ -312,3 +312,85 @@ class TestUploadApi:
             assert resp.json()["error"]["code"] == "UNAUTHENTICATED"
         finally:
             app.dependency_overrides.clear()
+
+
+# ── 集成：任务状态查询接口（T23；纯读库，MinIO/Redis 均不触碰）────────
+class TestTaskStatusApi:
+    """GET /api/v1/tasks/{task_id}：200 各状态 / 404 / 401。
+
+    鉴权口径（T23 决策）：只校身份不校归属——parse_tasks 无 user 字段，
+    归属模型待 OPEN-QUESTIONS #7 打通 uploaded_by 后一并补。
+    """
+
+    @pytest.fixture()
+    def client(self, engine: Engine) -> Iterator[TestClient]:
+        def _override_session() -> Iterator[Session]:
+            with Session(engine) as session:
+                yield session
+
+        app.dependency_overrides[get_session] = _override_session
+        app.dependency_overrides[_require_user_permission] = lambda: PermissionBundle(
+            scope_keys=["internal"]
+        )
+        try:
+            with TestClient(app) as c:
+                yield c
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_pending_task_shape(self, client: TestClient, engine: Engine) -> None:
+        with Session(engine) as session:
+            task_id = insert_task(session, payload=_payload("status-a"))
+        resp = client.get(f"/api/v1/tasks/{task_id}")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        # 字段名逐一对齐 openapi components.schemas.ParseTask
+        assert body["task_id"] == task_id
+        assert body["doc_id"] is None  # worker 未跑完，还没有文档
+        assert body["task_type"] == "parse"
+        assert body["status"] == "pending"
+        assert body["progress"] == 0
+        assert body["retry_count"] == 0
+        assert body["error_reason"] is None
+        # payload（staging_key 等内部信息）不得出现在响应里
+        assert "payload" not in body
+
+    def test_done_task_shape(self, client: TestClient, engine: Engine) -> None:
+        with Session(engine) as session:
+            task_id = insert_task(session, payload=_payload("status-b"))
+            mark_done(session, task_id, doc_id=42)
+            session.commit()
+        resp = client.get(f"/api/v1/tasks/{task_id}")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == TASK_STATUS_DONE
+        assert body["doc_id"] == 42
+        assert body["progress"] == 100
+
+    def test_failed_task_reason(self, client: TestClient, engine: Engine) -> None:
+        with Session(engine) as session:
+            task_id = insert_task(session, payload=_payload("status-c"))
+            mark_failed(session, task_id, error_reason="文件不是 UTF-8 编码")
+            session.commit()
+        resp = client.get(f"/api/v1/tasks/{task_id}")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == TASK_STATUS_FAILED
+        # 契约："error_reason 必须是给人看的话"（T19 中文原因落库）
+        assert body["error_reason"] == "文件不是 UTF-8 编码"
+
+    def test_missing_task_returns_404(self, client: TestClient) -> None:
+        resp = client.get("/api/v1/tasks/999999999")
+        assert resp.status_code == 404
+        assert resp.json()["error"]["code"] == "NOT_FOUND"
+
+    def test_requires_auth(self, engine: Engine) -> None:
+        # 不覆盖 _require_user_permission，也不带 X-KB-User → 401
+        app.dependency_overrides.clear()
+        try:
+            with TestClient(app) as c:
+                resp = c.get("/api/v1/tasks/1")
+            assert resp.status_code == 401
+            assert resp.json()["error"]["code"] == "UNAUTHENTICATED"
+        finally:
+            app.dependency_overrides.clear()

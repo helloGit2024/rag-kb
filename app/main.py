@@ -2,7 +2,8 @@
 
 路由：/healthz（存活探针）+ POST /api/v1/query（问答，V-1）
       + /api/v1/documents（上传 V0.1 · T18；列表 / 删除 · T22）
-      + /api/v1/knowledge-bases（知识库 CRUD，V0.1 · T21）。
+      + /api/v1/knowledge-bases（知识库 CRUD，V0.1 · T21）
+      + /api/v1/tasks/{task_id}（任务状态查询，V0.1 · T23）。
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from app.api.v1.documents import router as documents_router
 from app.api.v1.knowledge_bases import router as knowledge_bases_router
 from app.api.v1.query import ApiError
 from app.api.v1.query import router as query_router
+from app.api.v1.tasks import router as tasks_router
 from app.services.document import DocumentError
 from app.services.file_validator import FileValidationError
 from app.services.kb import KbError
@@ -25,6 +27,7 @@ app = FastAPI(title="RAG-KB", version="0.1.0")
 app.include_router(query_router)
 app.include_router(documents_router)
 app.include_router(knowledge_bases_router)
+app.include_router(tasks_router)
 
 
 @app.get("/healthz")
