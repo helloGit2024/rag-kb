@@ -39,6 +39,7 @@ from app.repos.models import (
     TASK_STATUS_DONE,
     TASK_STATUS_FAILED,
     TASK_STATUS_RUNNING,
+    KnowledgeBase,
     ParseTask,
 )
 from app.repos.task_repo import (
@@ -149,6 +150,10 @@ def _purge(engine: Engine) -> None:
                 ParseTask.payload["filename"].astext.like(f"{_TEST_TAG}%")
             )
         )
+        # T18b：上传接口测试自建的知识库（kb_id 夹具）也要清掉
+        session.execute(
+            delete(KnowledgeBase).where(KnowledgeBase.name.like(f"{_TEST_TAG}%"))
+        )
         session.commit()
 
 
@@ -172,6 +177,26 @@ def engine() -> Iterator[Engine]:
     _purge(eng)
     yield eng
     _purge(eng)
+
+
+@pytest.fixture()
+def kb_id(engine: Engine) -> Iterator[int]:
+    """建一个本测试专用知识库，供上传接口使用。
+
+    ★ T18b 起上传接口要求 kb 必须存在（不存在 → 404），不能再硬编码用 dev 库
+      的 kb 1（那要求运行库恰好有 id=1 的行，跨环境不可靠）。
+    ★ default_scope 刻意设成 `dept:测试部`，以便区分"不传 scope 时是否真的
+      取了 kb 默认值"（与显式传 `internal` 的用例形成对照）。
+    """
+    with Session(engine) as session:
+        kb = KnowledgeBase(
+            name=f"{_TEST_TAG}-upload-kb", default_scope="dept:测试部"
+        )
+        session.add(kb)
+        session.commit()
+        created_id = kb.id
+    yield created_id
+    _purge(engine)
 
 
 class TestTaskRepo:
@@ -255,13 +280,13 @@ class TestUploadApi:
             documents_mod.enqueue_ingest = _real_enqueue  # type: ignore[attr-defined]
 
     def test_upload_returns_202_with_task_id(
-        self, client: TestClient, engine: Engine
+        self, client: TestClient, engine: Engine, kb_id: int
     ) -> None:
         md_content = b"# hello\n\nworld"
         resp = client.post(
             "/api/v1/documents",
             files={"file": (f"{_TEST_TAG}-api.md", md_content, "text/markdown")},
-            data={"kb_id": "1"},
+            data={"kb_id": str(kb_id)},
         )
         assert resp.status_code == 202, resp.text
         body = resp.json()
@@ -274,12 +299,53 @@ class TestUploadApi:
         with Session(engine) as session:
             task = get_task(session, task_id)
             assert task.status == "pending"
-            assert task.payload["kb_id"] == 1
+            assert task.payload["kb_id"] == kb_id
             assert task.payload["filename"].endswith(".md")
             assert task.payload["staging_key"].startswith("staging/")
 
         # 且已入队（fake 记录到了同一个 task_id）
         assert client.enqueued_task_ids == [task_id]  # type: ignore[attr-defined]
+
+    def test_upload_missing_kb_is_404(self, client: TestClient) -> None:
+        """kb_id 不存在 → 404 NOT_FOUND（T18b）。"""
+        resp = client.post(
+            "/api/v1/documents",
+            files={"file": (f"{_TEST_TAG}-nokb.md", b"# x", "text/markdown")},
+            data={"kb_id": "-1"},
+        )
+        assert resp.status_code == 404, resp.text
+        assert resp.json()["error"]["code"] == "NOT_FOUND"
+
+    def test_upload_without_scope_uses_kb_default(
+        self, client: TestClient, engine: Engine, kb_id: int
+    ) -> None:
+        """不传 scope → 落库任务的 scope 等于该 kb 的 default_scope。
+
+        T18b 起不再是写死 internal。
+        """
+        resp = client.post(
+            "/api/v1/documents",
+            files={"file": (f"{_TEST_TAG}-def.md", b"# default", "text/markdown")},
+            data={"kb_id": str(kb_id)},
+        )
+        assert resp.status_code == 202, resp.text
+        with Session(engine) as session:
+            task = get_task(session, resp.json()["task_id"])
+            assert task.payload["scope"] == "dept:测试部"
+
+    def test_upload_explicit_scope_overrides_kb_default(
+        self, client: TestClient, engine: Engine, kb_id: int
+    ) -> None:
+        """显式传 scope → 生效值即传入值（覆盖 kb 默认），与上面用例形成对照。"""
+        resp = client.post(
+            "/api/v1/documents",
+            files={"file": (f"{_TEST_TAG}-exp.md", b"# explicit", "text/markdown")},
+            data={"kb_id": str(kb_id), "scope": "internal"},
+        )
+        assert resp.status_code == 202, resp.text
+        with Session(engine) as session:
+            task = get_task(session, resp.json()["task_id"])
+            assert task.payload["scope"] == "internal"
 
     def test_upload_rejects_bad_type(self, client: TestClient) -> None:
         resp = client.post(

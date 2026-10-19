@@ -155,6 +155,35 @@ def get_kb_summary(session: Session, kb_id: int) -> KbSummary:
     return _to_summary(kb, doc_count)
 
 
+def resolve_upload_scope(
+    session: Session, *, kb_id: int, scope: str | None
+) -> str:
+    """决定一次上传的**生效 scope**（T18b：接"知识库默认 scope"）。
+
+    规则（docs/openapi.yaml POST /documents：scope 不传则用知识库默认值）：
+      - kb 必须存在，否则 404 —— kb_id 是文档归属，凭空建行会让文档指向
+        不存在的知识库；
+      - 显式传入 scope → 必须过 T14 白名单（非法 400），生效值即传入值；
+      - 未传（或空白串）→ 取该 kb 的 `default_scope`。
+
+    ★ 为什么"校验 kb 存在"和"取默认 scope"是同一个函数：
+      只有先拿到 kb 行才知道默认 scope，两件事是同一查询的两面。
+    ★ 校验顺序：显式 scope 白名单（400）先于 kb 查找（404）。理由是前者是纯
+      输入校验、与资源状态无关，且保持 T18 既有行为（非法 scope → 400，不因
+      kb 是否存在而改变）。
+    ★ 为什么放服务层：接口层不查库（目录约定）；非法 scope 绝不能写进任务
+      让 worker 踩雷（R7）。
+
+    Raises:
+        KbError: 404 NOT_FOUND（kb 不存在）、400（显式 scope 非法）。
+    """
+    explicit_scope = _validate_scope(scope) if (scope and scope.strip()) else None
+    kb = kb_repo.get_kb(session, kb_id)
+    if kb is None:
+        raise KbError(404, "NOT_FOUND", "知识库不存在", {"kb_id": kb_id})
+    return explicit_scope or kb.default_scope
+
+
 def create_kb(
     session: Session,
     *,

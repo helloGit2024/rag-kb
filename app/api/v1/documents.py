@@ -28,12 +28,9 @@ from app.repos.document_repo import DocumentRow
 from app.repos.task_repo import insert_task, mark_failed
 from app.schemas.documents import DocumentListOut, DocumentOut, UploadAccepted
 from app.services import document as document_service
+from app.services import kb as kb_service
 from app.services.file_validator import validate_upload
-from app.services.permission import (
-    PermissionBundle,
-    ScopeError,
-    document_scope_key,
-)
+from app.services.permission import PermissionBundle
 
 router = APIRouter(prefix="/api/v1", tags=["documents"])
 
@@ -126,7 +123,8 @@ def upload_document(
     之后的解析 / 分块 / 向量化 / 落库全部在 worker 进程里做（T13 编排原样复用）。
 
     Raises（全部结构化错误信封）：
-        401 UNAUTHENTICATED / 409 DUPLICATE_FILE / 413 FILE_TOO_LARGE /
+        401 UNAUTHENTICATED / 404 NOT_FOUND（kb_id 不存在） /
+        409 DUPLICATE_FILE / 413 FILE_TOO_LARGE /
         415 FILE_TYPE_UNSUPPORTED / 503（队列不可用，任务已标 failed）。
     """
     # 暂不使用 perm 的具体内容——上传接口只要"身份合法"（401 已由依赖挡住）；
@@ -139,16 +137,13 @@ def upload_document(
         file.filename or "", data, kb_id=kb_id, session=session
     )
 
-    # scope：不传用 internal（openapi："不传则用知识库默认值"——knowledge_bases
-    # 表 T21 才建，V0.1 先以 internal 为默认，T21 后再换成 kb 默认值）。
-    # ★ 非法 scope 必须在这里失败（T14 白名单），绝不写进任务让 worker 踩雷。
-    effective_scope = (scope or "").strip() or "internal"
-    try:
-        document_scope_key(effective_scope)
-    except ScopeError as exc:
-        # 契约错误码清单没有 scope 专用码，400 里只有 QUESTION_INVALID 可用
-        # （语义偏 query，已在任务复盘中标注，待契约补码后替换）
-        raise ApiError(400, "QUESTION_INVALID", str(exc)) from exc
+    # scope：显式传入则过白名单（非法 400）；不传则取该知识库的 default_scope
+    # （T18b，openapi："不传则用知识库默认值"）。kb 不存在 → 404。
+    # ★ 顺序：必须在入队前完成校验，绝不把非法/无效的 scope 写进任务让 worker
+    #   踩雷（R7）；"取默认值"与"校验 kb 存在"是同一次查询（见服务层注释）。
+    effective_scope = kb_service.resolve_upload_scope(
+        session, kb_id=kb_id, scope=scope
+    )
 
     # ② 暂存原文（worker 凭 payload.staging_key 取回）
     task_uuid = str(uuid.uuid4())

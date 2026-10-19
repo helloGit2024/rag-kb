@@ -302,6 +302,82 @@ class TestKbService:
         assert summary.doc_count == 1
 
 
+class TestResolveUploadScope:
+    """T18b：上传生效 scope 的解析逻辑。
+
+    覆盖面：kb 默认值 / 显式覆盖 / kb 不存在 404 / 非法 400。这是 T18b 的核心
+    ——上传接口不传 scope 时不再写死 `internal`，而取该 KB 的 `default_scope`；
+    kb 必须真实存在，否则 404。
+    """
+
+    def test_default_scope_used_when_omitted(
+        self, engine: Engine, user_id: int
+    ) -> None:
+        with Session(engine) as session:
+            kb = kb_service.create_kb(
+                session,
+                name=_kb_name("rus-default"),
+                description=None,
+                default_scope="dept:研发部",
+                created_by=user_id,
+            )
+            # 不传 / 传空白串 → 均取 kb 的 default_scope
+            assert (
+                kb_service.resolve_upload_scope(session, kb_id=kb.id, scope=None)
+                == "dept:研发部"
+            )
+            assert (
+                kb_service.resolve_upload_scope(session, kb_id=kb.id, scope="  ")
+                == "dept:研发部"
+            )
+
+    def test_explicit_scope_overrides_default(
+        self, engine: Engine, user_id: int
+    ) -> None:
+        with Session(engine) as session:
+            kb = kb_service.create_kb(
+                session,
+                name=_kb_name("rus-explicit"),
+                description=None,
+                default_scope="internal",
+                created_by=user_id,
+            )
+            assert (
+                kb_service.resolve_upload_scope(
+                    session, kb_id=kb.id, scope="dept:销售部"
+                )
+                == "dept:销售部"
+            )
+
+    def test_missing_kb_is_404(self, engine: Engine) -> None:
+        with Session(engine) as session:
+            with pytest.raises(KbError) as ei:
+                kb_service.resolve_upload_scope(session, kb_id=-1, scope=None)
+            assert ei.value.status_code == 404
+            assert ei.value.code == "NOT_FOUND"
+            # 显式 scope 合法但 kb 不存在 → 仍是 404（kb 归属校验不因 scope 而跳过）
+            with pytest.raises(KbError) as ei2:
+                kb_service.resolve_upload_scope(session, kb_id=-1, scope="internal")
+            assert ei2.value.status_code == 404
+
+    def test_invalid_scope_is_400(self, engine: Engine, user_id: int) -> None:
+        with Session(engine) as session:
+            kb = kb_service.create_kb(
+                session,
+                name=_kb_name("rus-bad"),
+                description=None,
+                default_scope="internal",
+                created_by=user_id,
+            )
+            with pytest.raises(KbError) as ei:
+                kb_service.resolve_upload_scope(session, kb_id=kb.id, scope="dept:")
+            assert ei.value.status_code == 400
+            # 顺序：显式 scope 非法先于 kb 查找 → 即便 kb 不存在也返回 400
+            with pytest.raises(KbError) as ei2:
+                kb_service.resolve_upload_scope(session, kb_id=-1, scope="nope")
+            assert ei2.value.status_code == 400
+
+
 class TestKbCascadeDelete:
     """级联删除：清对象 → 删 chunks → 软删 documents → 删库行。"""
 
