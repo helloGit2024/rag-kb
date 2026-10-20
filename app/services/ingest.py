@@ -102,6 +102,8 @@ def ingest_document(
     filename: str,
     data: bytes,
     scope: str = "internal",
+    title: str | None = None,
+    uploaded_by: int | None = None,
 ) -> IngestResult:
     """把一份文件走完入库全链路，返回入库结果。
 
@@ -113,6 +115,10 @@ def ingest_document(
         scope: 文档可见范围（`public` / `internal` / `dept:<部门>`）。
             由 `document_scope_key()` 校验并推导成 chunks.scope_key（T14）。
             用户侧的可见范围解析在 T15。
+        title: 自定义标题（T22c，可选）。空白串视同未传，落库回落到文件名推得的标题。
+            只覆盖展示用的 documents.title；存储 key 与 source_type 仍看 filename。
+        uploaded_by: 上传者 users.id（T22c，可选）。落 `documents.uploaded_by`；
+            为 None 表示来源不可追溯（CLI 脚本 / 队列里的旧 payload）。
 
     Raises:
         FileValidationError: 类型 / 大小 / 去重校验失败（T12），含契约错误码。
@@ -171,11 +177,14 @@ def ingest_document(
     put_text(key_parsed, parsed_text)
 
     # ---- ⑥ 单事务写库；失败则回滚并补偿删除 ⑤ 写的对象 ----
+    # T22c：自定义标题只覆盖 documents.title；ext / source_type 已在 ⑤ 由文件名固定。
+    effective_title = title.strip() if title and title.strip() else validated.title
     try:
         doc_id = insert_document(
             session,
             kb_id=kb_id,
-            title=validated.title,
+            title=effective_title,
+            uploaded_by=uploaded_by,
             source_type=validated.source_type,
             storage_key=key_raw,
             parsed_key=key_parsed,

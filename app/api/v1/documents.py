@@ -112,6 +112,7 @@ def upload_document(
     session: Annotated[Session, Depends(get_session)],
     perm: Annotated[PermissionBundle, Depends(_require_user_permission)],
     scope: Annotated[str | None, Form()] = None,
+    title: Annotated[str | None, Form()] = None,
 ) -> UploadAccepted:
     """上传文档（异步入队）。
 
@@ -122,14 +123,20 @@ def upload_document(
       ④ LPUSH 入队。
     之后的解析 / 分块 / 向量化 / 落库全部在 worker 进程里做（T13 编排原样复用）。
 
+    ★ T22c（契约字段接线，行为向后兼容）：
+      - `title`（可选）覆盖落库标题，空白串视同未传、仍由文件名推得（见 ingest 编排）；
+      - 上传者 `perm.user_id` 随 payload 带进 worker，落 `documents.uploaded_by`。
+      ★ title 只改 `documents.title`（展示用）；对象存储 key 与 source_type 仍由
+        原文文件名（`validated.ext`）决定，绝不拿自定义标题去推扩展名。
+
     Raises（全部结构化错误信封）：
         401 UNAUTHENTICATED / 404 NOT_FOUND（kb_id 不存在） /
         409 DUPLICATE_FILE / 413 FILE_TOO_LARGE /
         415 FILE_TYPE_UNSUPPORTED / 503（队列不可用，任务已标 failed）。
     """
-    # 暂不使用 perm 的具体内容——上传接口只要"身份合法"（401 已由依赖挡住）；
-    # kb 级写权限（谁能往哪个 kb 传）属 T21/T22 的 RBAC 范畴，V0.1 不做。
-    _ = perm
+    # T22c：上传者身份随任务带进 worker，落 documents.uploaded_by。
+    # kb 级写权限（谁能往哪个 kb 传）仍属 V1 的 RBAC 范畴，V0.1 不做。
+    uploader_id = perm.user_id
 
     data = file.file.read()
     # ① 校验（T12）：409/413/415 在此同步抛出，由 main.py 的处理器转错误信封
@@ -152,6 +159,8 @@ def upload_document(
     put_bytes(skey, data)
 
     # ③ 建任务行（payload 快照 = 重放与排查的全部依据）
+    # T22c：title 空白串视同未传（与 openapi 的可选语义一致），落库回落到文件名。
+    custom_title = (title or "").strip() or None
     payload = {
         "task_uuid": task_uuid,
         "kb_id": kb_id,
@@ -160,6 +169,8 @@ def upload_document(
         "staging_key": skey,
         "file_md5": validated.file_md5,
         "file_size": validated.file_size,
+        "title": custom_title,
+        "uploader_id": uploader_id,
     }
     task_id = insert_task(session, payload=payload)
 

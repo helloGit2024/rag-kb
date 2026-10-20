@@ -143,6 +143,9 @@ def _process_one_guarded(session, task_id: int) -> None:
             filename=payload["filename"],
             data=data,
             scope=payload.get("scope") or "internal",
+            # T22c：向后兼容——队列里排队的旧 payload 没有这两个 key，.get() 取 None
+            title=payload.get("title"),
+            uploaded_by=payload.get("uploader_id"),
         )
     except DuplicateIngestError as exc:
         # T22b：同文件已在并发/连点场景下被另一个任务入库。优雅复用——
