@@ -31,6 +31,12 @@ TEST_USERS = [
     ("admin", "管理员", "管理部", "admin"),
     ("alice", "爱丽丝", "销售部", "user"),
     ("bob", "鲍勃", "研发部", "user"),
+    # 评估专用账号（T28）：erin 是"干净的研发部身份"——bob 带跨部门授权
+    # dept:销售部（演示设定），拿 bob 跑"研发问销售必须被拒"的越权题会假失败；
+    # carol / dave 覆盖 golden_set 里的 dept:市场部 / dept:财务部 提问者。
+    ("erin", "艾琳", "研发部", "user"),
+    ("carol", "卡罗尔", "市场部", "user"),
+    ("dave", "戴夫", "财务部", "user"),
 ]
 # 额外授权：bob 在跨部门项目组里，故额外可见销售部
 TEST_GRANTS = {"bob": ["dept:销售部"]}
