@@ -18,6 +18,7 @@ import pytest
 from minio import Minio
 from sqlalchemy import create_engine, delete, func, select
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.embedding import embed_texts
@@ -29,10 +30,14 @@ from app.core.storage import (
     load_config,
 )
 from app.repos.chunk_repo import search_chunks
-from app.repos.document_repo import find_active_by_md5
+from app.repos.document_repo import (
+    find_active_by_md5,
+    insert_document,
+    soft_delete_document,
+)
 from app.repos.models import Chunk, Document
 from app.services.file_validator import md5_of_bytes
-from app.services.ingest import ingest_document
+from app.services.ingest import DuplicateIngestError, ingest_document
 
 # 专用验收知识库 id：不与开发库真实数据（kb_id=1）混在一起
 KB_ID = 999999
@@ -187,3 +192,135 @@ class TestIngest:
 
         # ② 对象存储无残留（刚写的 docs/{uuid}/ 已被补偿删除）
         assert _object_names() == before, "回滚后不应留下孤儿对象"
+
+
+def _docs_object_names(client: Minio, config: StorageConfig) -> set[str]:
+    """列出对象存储里 docs/ 前缀下的全部对象名（用于断言"无新增孤儿对象"）。"""
+    return {
+        obj.object_name
+        for obj in client.list_objects(config.bucket, prefix="docs/", recursive=True)
+    }
+
+
+class TestDuplicateIngest:
+    """T22b：同 kb 内相同 md5 的重复入库（两道防线，打真实 PG + Ollama + silo）。
+
+    与 tests/test_task_queue.py::TestDuplicateUploadRace 的分工：
+    - 那边把存储 / 嵌入换成假实现，验"上传接口 → worker 消费 → 只落一行"的队列语义；
+    - 这边用**真实对象存储与嵌入**，直接验 `ingest_document` 自身的查重（防线①）
+      与 DB 部分唯一索引（防线②）——两处属于不同层，都必须真。
+    """
+
+    def test_second_ingest_reuses_existing_document(
+        self, services: tuple[Engine, Minio, StorageConfig]
+    ) -> None:
+        """防线①：同 kb 相同 md5 第二次入库 → 抛 `DuplicateIngestError` 复用已有文档。
+
+        用**不同文件名**传同一份字节：查重口径是内容（md5），不是文件名。
+        """
+        engine, client, config = services
+        data = SAMPLE_TEXT.encode("utf-8")
+
+        with Session(engine) as session:
+            first = ingest_document(
+                session, kb_id=KB_ID, filename=SAMPLE_TITLE, data=data
+            )
+
+        objects_before = _docs_object_names(client, config)
+
+        with Session(engine) as session:
+            with pytest.raises(DuplicateIngestError) as excinfo:
+                ingest_document(
+                    session,
+                    kb_id=KB_ID,
+                    filename="t22b-换名.md",  # 文件名不同、内容相同 → 仍应判重
+                    data=data,
+                )
+        assert excinfo.value.doc_id == first.doc_id, "重复异常必须携带已有 doc_id"
+
+        with Session(engine) as session:
+            active = session.scalar(
+                select(func.count())
+                .select_from(Document)
+                .where(Document.kb_id == KB_ID, Document.is_active.is_(True))
+            )
+            hit = find_active_by_md5(session, kb_id=KB_ID, file_md5=md5_of_bytes(data))
+        assert hit == first.doc_id
+        assert int(active or 0) == 1, "重复上传后仍只应有一行活跃文档"
+
+        # 第二次在写对象存储之前就失败（查重在链路最前）→ 不留新孤儿对象
+        assert _docs_object_names(client, config) == objects_before, (
+            "查重失败不应留下新对象"
+        )
+
+    def test_reupload_allowed_after_soft_delete(
+        self, services: tuple[Engine, Minio, StorageConfig]
+    ) -> None:
+        """部分索引语义：软删行（`is_active=false`）不算重复，同一文件可重新上传。
+
+        ★ 这正是"部分唯一索引 `WHERE is_active=true`"与普通唯一约束的区别：
+          普通唯一约束会永久拦住同一文件，软删后就再也传不回来了。
+        """
+        engine, _, _ = services
+        data = SAMPLE_TEXT.encode("utf-8")
+
+        with Session(engine) as session:
+            first = ingest_document(
+                session, kb_id=KB_ID, filename=SAMPLE_TITLE, data=data
+            )
+
+        with Session(engine) as session:
+            soft_delete_document(session, doc_id=first.doc_id)
+            session.commit()
+
+        # 软删后重传：查重应放行，产生新的一行（新 doc_id）
+        with Session(engine) as session:
+            second = ingest_document(
+                session, kb_id=KB_ID, filename=SAMPLE_TITLE, data=data
+            )
+        assert second.doc_id != first.doc_id, "软删后重传应产生新的文档行"
+
+        with Session(engine) as session:
+            active = session.scalar(
+                select(func.count())
+                .select_from(Document)
+                .where(Document.kb_id == KB_ID, Document.is_active.is_(True))
+            )
+            total = session.scalar(
+                select(func.count())
+                .select_from(Document)
+                .where(Document.kb_id == KB_ID)
+            )
+        assert int(active or 0) == 1, "重传后活跃行仍应为 1"
+        assert int(total or 0) == 2, "软删行应保留（1 软删 + 1 活跃）"
+
+    def test_partial_unique_index_rejects_active_duplicate(
+        self, services: tuple[Engine, Minio, StorageConfig]
+    ) -> None:
+        """防线②：绕过应用层查重，直接插同样的活跃行 → 部分唯一索引必须拒绝。
+
+        ★ 这是**唯一**能证明迁移 `0005` 的 `uq_documents_kb_md5_active`
+          真实生效的用例：test_task_queue 的回归走应用层查重（防线①），
+          根本走不到这条索引冲突。
+        """
+        engine, _, _ = services
+        data = SAMPLE_TEXT.encode("utf-8")
+
+        with Session(engine) as session:
+            ingest_document(session, kb_id=KB_ID, filename=SAMPLE_TITLE, data=data)
+
+        with Session(engine) as session:
+            with pytest.raises(IntegrityError):
+                insert_document(
+                    session,
+                    kb_id=KB_ID,
+                    title="t22b-dup",
+                    source_type="markdown",
+                    storage_key="docs/t22b-dup/raw.md",
+                    parsed_key="docs/t22b-dup/parsed.txt",
+                    file_md5=md5_of_bytes(data),  # 与上面那行（活跃）相同 → 触发索引
+                    file_size=len(data),
+                    scope="internal",
+                    status="done",
+                )
+            session.rollback()
