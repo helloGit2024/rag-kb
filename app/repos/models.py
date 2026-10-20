@@ -1,7 +1,8 @@
 """ORM 模型定义（V-1 骨架 → V0.1 · T14 / T18 / T21）。
 
 表：documents / chunks（V-1骨架）+ users / user_scope_grants（V0.1 T14）
-    + parse_tasks（V0.1 T18）+ knowledge_bases（V0.1 T21）。
+    + parse_tasks（V0.1 T18）+ knowledge_bases（V0.1 T21）
+    + eval_datasets / eval_runs / eval_run_items（V0.1 T33）。
 ★ app/repos/ 是唯一允许出现 SQL 的层；这里只放表结构元数据，不写查询 SQL。
 
 FK 取舍（R8：先加字段、后加约束）：
@@ -16,6 +17,7 @@ FK 取舍（R8：先加字段、后加约束）：
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import List, Optional
 
 from pgvector.sqlalchemy import Vector
@@ -27,11 +29,12 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     Text,
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -276,4 +279,136 @@ class ParseTask(Base):
     __table_args__ = (
         # worker 拉任务与状态查询接口都按 status 过滤
         Index("ix_parse_tasks_status", "status"),
+    )
+
+
+# ── 评估三张表（V0.1 · T33）────────────────────────────────────────────
+# 字段与设计理由逐条见 docs/data-model.md 2.11—2.13，这里只映射、不自创。
+# 两条纪律由 DB 约束兜底（见 alembic/versions/0006 头注释）：
+# ck_active_requires_confirmed（R13/R16）、ck_attribution（R15）。
+
+
+class EvalDataset(Base):
+    """数据集元数据与校验和（V0.1 · T33，data-model 2.11）。
+
+    ★ 题目本体不进表：这里只存元数据 + sha256（checksum）；
+      item_id 在 eval_run_items 里因此是 text 而非外键。
+    """
+
+    __tablename__ = "eval_datasets"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[str] = mapped_column(Text, nullable=False)
+    repo_path: Mapped[str] = mapped_column(Text, nullable=False)
+    file_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    file_format: Mapped[str] = mapped_column(Text, nullable=False)
+    checksum: Mapped[str] = mapped_column(Text, nullable=False)
+    item_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    distribution: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    tag_stats: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    state: Mapped[str] = mapped_column(Text, nullable=False, default="draft")
+    unconfirmed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    source: Mapped[str] = mapped_column(Text, nullable=False, default="manual")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint("name", "version", name="uq_dataset_name_ver"),
+    )
+
+
+class EvalRun(Base):
+    """一次评估的运行记录（V0.1 · T33，data-model 2.12）。
+
+    ★ git_commit + config_snapshot 是"两次数字可不可比"的唯一依据（R14）。
+    ★ 同一数据集只允许一个基线：由部分唯一索引 uq_run_baseline 兜底，
+      ORM 层不重复实现（Index + postgresql_where）。
+    """
+
+    __tablename__ = "eval_runs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    dataset_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("eval_datasets.id"), nullable=False
+    )
+    git_commit: Mapped[str] = mapped_column(Text, nullable=False)
+    config_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    model_config_ids: Mapped[Optional[List[int]]] = mapped_column(
+        ARRAY(BigInteger), nullable=True
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+    metrics: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    attribution_counts: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    cost_cny: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4), nullable=True)
+    total_tokens_in: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    total_tokens_out: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    wall_time_s: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    report_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_baseline: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    baseline_of: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    triggered_by: Mapped[str] = mapped_column(Text, nullable=False, default="manual")
+    error_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_run_baseline",
+            "dataset_id",
+            unique=True,
+            postgresql_where=text("is_baseline = true"),
+        ),
+    )
+
+
+class EvalRunItem(Base):
+    """逐条评估结果（V0.1 · T33，data-model 2.13）。
+
+    ★ answer 必须存：系统实际输出不留档就无法复盘。
+    ★ attribution_confirmed 只能人工写入（R15）；ck_attribution 约束
+      保证"结论必须与 candidate + confirmed_by 并存"，ORM 不另设默认。
+    """
+
+    __tablename__ = "eval_run_items"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("eval_runs.id"), nullable=False
+    )
+    item_id: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(Text, nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    scores: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    verdict: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    retrieval_hit: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    retrieved_chunk_ids: Mapped[Optional[List[int]]] = mapped_column(
+        ARRAY(BigInteger), nullable=True
+    )
+    answer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    refused: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    degraded: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    retrieve_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    generate_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    cost_cny: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4), nullable=True)
+    attribution_candidate: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    attribution_confirmed: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    confirmed_by: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("uq_run_item", "run_id", "item_id", unique=True),
     )
