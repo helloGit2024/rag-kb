@@ -245,6 +245,7 @@ def insert_document(
     file_size: int,
     scope: str,
     status: str,
+    uploaded_by: int | None = None,
 ) -> int:
     """插入一条 documents 记录并 flush（拿到自增 id），返回新文档 id。
 
@@ -253,6 +254,9 @@ def insert_document(
 
     ★ status 由调用方显式传入、不给默认值：写状态是编排层的决定，
     T13 只在整条链路成功时传 "done"，状态机推进属 T19。
+
+    ★ uploaded_by（T22c，可选）：上传者 users.id，来自任务 payload；
+    为 None 表示来源不可追溯（CLI 脚本 / 队列里的旧 payload）——不加默认兜底值。
     """
     doc = Document(
         kb_id=kb_id,
@@ -264,6 +268,7 @@ def insert_document(
         file_size=file_size,
         status=status,
         scope=scope,
+        uploaded_by=uploaded_by,
     )
     session.add(doc)
     session.flush()

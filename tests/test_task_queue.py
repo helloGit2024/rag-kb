@@ -24,7 +24,7 @@ from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, delete
+from sqlalchemy import create_engine, delete, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -39,8 +39,11 @@ from app.repos.models import (
     TASK_STATUS_DONE,
     TASK_STATUS_FAILED,
     TASK_STATUS_RUNNING,
+    Chunk,
+    Document,
     KnowledgeBase,
     ParseTask,
+    User,
 )
 from app.repos.task_repo import (
     TaskNotFoundError,
@@ -147,6 +150,19 @@ def _purge(engine: Engine) -> None:
     上传接口测试用 t18-test-api.md），统一覆盖。
     """
     with Session(engine) as session:
+        # T22c：上传链路测试会由 worker 真正落 documents / chunks 行（并造 users 行
+        #   供 uploaded_by 的 FK）。按测试 kb / 用户名前缀清理，别残留在 dev 库。
+        #   顺序：chunks → documents（chunks.doc_id → documents.id 有 FK）。
+        kb_ids = list(
+            session.scalars(
+                select(KnowledgeBase.id).where(
+                    KnowledgeBase.name.like(f"{_TEST_TAG}%")
+                )
+            )
+        )
+        if kb_ids:
+            session.execute(delete(Chunk).where(Chunk.kb_id.in_(kb_ids)))
+            session.execute(delete(Document).where(Document.kb_id.in_(kb_ids)))
         session.execute(
             delete(ParseTask).where(
                 ParseTask.payload["filename"].astext.like(f"{_TEST_TAG}%")
@@ -156,6 +172,7 @@ def _purge(engine: Engine) -> None:
         session.execute(
             delete(KnowledgeBase).where(KnowledgeBase.name.like(f"{_TEST_TAG}%"))
         )
+        session.execute(delete(User).where(User.username.like(f"{_TEST_TAG}%")))
         session.commit()
 
 
@@ -199,6 +216,26 @@ def kb_id(engine: Engine) -> Iterator[int]:
         created_id = kb.id
     yield created_id
     _purge(engine)
+
+
+@pytest.fixture()
+def user_id(engine: Engine) -> Iterator[int]:
+    """T22c：造一个测试用上传者。
+
+    ★ documents.uploaded_by 有 FK → users.id，"落真实用户 id"必须有真实行，
+      否则 uploaded_by 只能是 None、断言恒真。
+    ★ 清理统一交给 _purge（按 username 前缀），避免用例间互相拖累 FK。
+    """
+    with Session(engine) as session:
+        user = User(
+            username=f"{_TEST_TAG}-uploader",
+            display_name="测试上传者",
+            dept="测试部",
+        )
+        session.add(user)
+        session.commit()
+        created_id = user.id
+    yield created_id
 
 
 class TestTaskRepo:
@@ -499,6 +536,163 @@ class TestDuplicateUploadRace:
                 .where(Document.kb_id == kb_id, Document.is_active.is_(True))
             )
             assert doc_count == 1
+
+
+# ── T22c：title 与 uploaded_by 上传链路接线 ───────────────────────────
+class TestUploadMetadata:
+    """title / uploader_id 带进 payload，worker 落 documents 行（T22c）。
+
+    ★ 与 TestUploadApi 的差别：此处的身份依赖带真实 user_id，否则
+      uploaded_by 恒为 None、断言恒真（TestUploadApi 只声明 scope_keys）。
+    """
+
+    @pytest.fixture()
+    def client(self, engine: Engine, user_id: int) -> Iterator[TestClient]:
+        eng = engine
+        enqueued: list[int] = []
+
+        def _override_session() -> Iterator[Session]:
+            with Session(eng) as session:
+                yield session
+
+        app.dependency_overrides[get_session] = _override_session
+        app.dependency_overrides[_require_user_permission] = lambda: PermissionBundle(
+            scope_keys=["internal"], user_id=user_id
+        )
+        # MinIO / Redis 不打真实服务（同 TestUploadApi）
+        import app.api.v1.documents as documents_mod
+
+        documents_mod.ensure_bucket = lambda **_: "ragkb"  # type: ignore[attr-defined]
+        documents_mod.put_bytes = lambda *a, **k: a[0]  # type: ignore[attr-defined]
+        documents_mod.enqueue_ingest = (  # type: ignore[attr-defined]
+            lambda task_id: enqueued.append(task_id)
+        )
+        try:
+            with TestClient(app) as c:
+                c.enqueued_task_ids = enqueued  # type: ignore[attr-defined]
+                yield c
+        finally:
+            app.dependency_overrides.clear()
+            documents_mod.ensure_bucket = __import__(
+                "app.core.storage", fromlist=["ensure_bucket"]
+            ).ensure_bucket  # type: ignore[attr-defined]
+            documents_mod.put_bytes = __import__(
+                "app.core.storage", fromlist=["put_bytes"]
+            ).put_bytes  # type: ignore[attr-defined]
+            documents_mod.enqueue_ingest = _real_enqueue  # type: ignore[attr-defined]
+
+    @staticmethod
+    def _fake_ingest_deps(monkeypatch: pytest.MonkeyPatch, content: bytes) -> None:
+        """worker 侧对象存储与嵌入全换假实现（同 TestDuplicateUploadRace）。"""
+        monkeypatch.setattr(ingest_worker, "get_bytes", lambda key: content)
+        monkeypatch.setattr(ingest_mod, "ensure_bucket", lambda: None)
+        monkeypatch.setattr(ingest_mod, "put_text", lambda *a, **k: None)
+        monkeypatch.setattr(ingest_mod, "delete_prefix", lambda p: 0)
+        monkeypatch.setattr(
+            ingest_mod,
+            "embed_texts",
+            lambda texts, pace_s=0.0: [[0.0] * 1024 for _ in texts],
+        )
+
+    @pytest.mark.parametrize(
+        ("sent", "expected"),
+        [("部门制度汇编", "部门制度汇编"), ("  ", None), (None, None)],
+    )
+    def test_payload_title(
+        self,
+        client: TestClient,
+        engine: Engine,
+        kb_id: int,
+        sent: str | None,
+        expected: str | None,
+    ) -> None:
+        """title 传入 → payload 保留；空白串 / 不传 → None（视同未传）。"""
+        form: dict[str, str] = {"kb_id": str(kb_id)}
+        if sent is not None:
+            form["title"] = sent
+        resp = client.post(
+            "/api/v1/documents",
+            files={"file": (f"{_TEST_TAG}-ttl.md", b"# t", "text/markdown")},
+            data=form,
+        )
+        assert resp.status_code == 202, resp.text
+        with Session(engine) as session:
+            task = get_task(session, resp.json()["task_id"])
+            assert task.payload["title"] == expected
+
+    def test_payload_carries_uploader_id(
+        self, client: TestClient, engine: Engine, kb_id: int, user_id: int
+    ) -> None:
+        resp = client.post(
+            "/api/v1/documents",
+            files={"file": (f"{_TEST_TAG}-up.md", b"# u", "text/markdown")},
+            data={"kb_id": str(kb_id)},
+        )
+        assert resp.status_code == 202, resp.text
+        with Session(engine) as session:
+            task = get_task(session, resp.json()["task_id"])
+            assert task.payload["uploader_id"] == user_id  # 不是 None
+
+    def test_row_persists_uploader_and_custom_title(
+        self,
+        client: TestClient,
+        engine: Engine,
+        kb_id: int,
+        user_id: int,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """process_one 后 documents 行：title=自定义值、uploaded_by=真实用户 id；
+        且 storage_key 仍带原文扩展名（title 不参与推扩展名）。"""
+        content = "# T22c meta\n\n自定义标题与上传者落库。".encode()
+        resp = client.post(
+            "/api/v1/documents",
+            files={"file": (f"{_TEST_TAG}-meta.md", content, "text/markdown")},
+            data={"kb_id": str(kb_id), "title": "部门制度汇编"},
+        )
+        assert resp.status_code == 202, resp.text
+        self._fake_ingest_deps(monkeypatch, content)
+
+        with Session(engine) as session:
+            ingest_worker.process_one(session, resp.json()["task_id"])
+
+        with Session(engine) as session:
+            doc = session.scalar(
+                select(Document).where(
+                    Document.kb_id == kb_id, Document.is_active.is_(True)
+                )
+            )
+            assert doc is not None
+            assert doc.title == "部门制度汇编"
+            assert doc.uploaded_by == user_id
+            assert (doc.storage_key or "").endswith(".md")
+
+    def test_row_falls_back_to_filename_title(
+        self,
+        client: TestClient,
+        engine: Engine,
+        kb_id: int,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """不传 title → documents.title 回落为文件名推得的标题。"""
+        content = "# T22c fallback\n\n不传自定义标题。".encode()
+        filename = f"{_TEST_TAG}-fallback.md"
+        resp = client.post(
+            "/api/v1/documents",
+            files={"file": (filename, content, "text/markdown")},
+            data={"kb_id": str(kb_id)},
+        )
+        assert resp.status_code == 202, resp.text
+        self._fake_ingest_deps(monkeypatch, content)
+        with Session(engine) as session:
+            ingest_worker.process_one(session, resp.json()["task_id"])
+        with Session(engine) as session:
+            doc = session.scalar(
+                select(Document).where(
+                    Document.kb_id == kb_id, Document.is_active.is_(True)
+                )
+            )
+            assert doc is not None
+            assert doc.title == filename
 
 
 # ── 集成：任务状态查询接口（T23；纯读库，MinIO/Redis 均不触碰）────────
