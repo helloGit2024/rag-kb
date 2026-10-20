@@ -115,7 +115,7 @@
 | T30 | 补足评估集到 30 条（含 refuse 6 / permission 4 / edge 2） | T27 | 30 条全部有**我确认过的**标准答案 | **我能验收** |
 | T31 | 建立第一份基线数字 + `make eval-compare` | T28 | 能一键对比两次评估结果 | 我能验收 |
 | T32 | 延迟与成本埋点（分段耗时 + Token 记账） | T06 | 问答响应里能看到 `retrieve_ms` / `generate_ms` / `cost_cny` | 我能验收 |
-| T33 | ★ **评估结果入库**：`eval_datasets` / `eval_runs` / `eval_run_items` + 迁移；`make eval` 第一版即写表 | T02 | 跑一次 `make eval`，库里多出 1 条 run + 30 条 item；item 里能看到 `answer` 全文与分段耗时；`make migrate-down` 可回滚 | **我能验收** |
+| T33 | ★ **评估结果入库**：`eval_datasets` / `eval_runs` / `eval_run_items` + 迁移；`make eval` 第一版即写表 ✅ **已完成**（2026-10-20：`alembic/versions/0006_eval_tables.py` 严格按 data-model 2.11—2.13 建三表，含 `ck_active_requires_confirmed`（未确认禁启用，R13/R16 兜底）、`uq_run_baseline`（同数据集唯一基线）、`ck_attribution`（归因结论必带 candidate+confirmed_by，R15 兜底）；`models.py` 追加 3 个 ORM 类；新增 `app/repos/eval_repo.py`（register/activate/create_run/insert_items/finish/set_baseline，事务约定与 task_repo 一致）；`tests/test_eval_repo.py` 5 例真机集成——含 1 run + 30 item 落库读回 answer 全文与分段耗时、三条约束负例；`make migrate-down 0005`→`upgrade 0006` 回滚验证通过；`make lint` 全过、`make test` 226 passed。**遗留**：验收项"跑一次 `make eval`"随 T28 实现后复验） | T02 | 跑一次 `make eval`，库里多出 1 条 run + 30 条 item；item 里能看到 `answer` 全文与分段耗时；`make migrate-down` 可回滚 | **我能验收** |
 | T34 | **问答流水入库**：`query_logs` 表 + 迁移 + 每次问答落一行（含 `scope_snapshot`） | T15,T32 | 提一个问题后库里多一行；`scope_snapshot` 与生效权限一致；`make migrate-down` 能回滚 | **我能验收** |
 
 > **为什么 V0.1 就把这些表建起来，而界面却要等到 V1？**
