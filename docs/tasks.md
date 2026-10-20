@@ -110,12 +110,12 @@
 
 | ID | 任务 | 依赖 | 验收标准 | 验收难度 |
 |----|------|------|---------|---------|
-| T28 | 评估脚本（读 golden_set，跑三层指标） | T08 | `make eval` 输出指标表 | 需你帮我验 |
+| T28 | 评估脚本（读 golden_set，跑三层指标） | T08,T33 | `make eval` 输出指标表 | 需你帮我验 |
 | T29 | 裁判模型评分（忠实度 / 相关性 / 引用准确率） | T28 | 输出逐条评分 + 理由 | 需你帮我验 |
 | T30 | 补足评估集到 30 条（含 refuse 6 / permission 4 / edge 2） | T27 | 30 条全部有**我确认过的**标准答案 | **我能验收** |
 | T31 | 建立第一份基线数字 + `make eval-compare` | T28 | 能一键对比两次评估结果 | 我能验收 |
 | T32 | 延迟与成本埋点（分段耗时 + Token 记账） | T06 | 问答响应里能看到 `retrieve_ms` / `generate_ms` / `cost_cny` | 我能验收 |
-| T33 | ★ **评估结果入库**：`eval_datasets` / `eval_runs` / `eval_run_items` + 迁移；`make eval` 改为写表 | T02,T31 | 跑一次 `make eval`，库里多出 1 条 run + 30 条 item；item 里能看到 `answer` 全文与分段耗时；`make migrate-down` 可回滚 | **我能验收** |
+| T33 | ★ **评估结果入库**：`eval_datasets` / `eval_runs` / `eval_run_items` + 迁移；`make eval` 第一版即写表 | T02 | 跑一次 `make eval`，库里多出 1 条 run + 30 条 item；item 里能看到 `answer` 全文与分段耗时；`make migrate-down` 可回滚 | **我能验收** |
 | T34 | **问答流水入库**：`query_logs` 表 + 迁移 + 每次问答落一行（含 `scope_snapshot`） | T15,T32 | 提一个问题后库里多一行；`scope_snapshot` 与生效权限一致；`make migrate-down` 能回滚 | **我能验收** |
 
 > **为什么 V0.1 就把这些表建起来，而界面却要等到 V1？**
