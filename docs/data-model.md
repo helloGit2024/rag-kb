@@ -114,7 +114,7 @@ knowledge_bases ──< documents ──< chunks
 | source_type | text | `txt` / `markdown`（V2 扩展 pdf/docx） |
 | storage_key | text | MinIO 对象 key（原文） |
 | parsed_key | text | MinIO 对象 key（解析后文本） |
-| file_md5 | text | **用于去重**，同 kb 内 md5 相同则拒绝重复入库 |
+| file_md5 | text | **用于去重**，同 kb 内 md5 相同则拒绝重复入库（上传端 409；另由下方局部唯一索引兜底） |
 | file_size | bigint | |
 | status | text | `pending`/`parsing`/`chunking`/`embedding`/`done`/`failed` |
 | error_reason | text | 失败原因（**必须是人话**，见 AC-02） |
@@ -123,6 +123,21 @@ knowledge_bases ──< documents ──< chunks
 | version | int | 同名文档的第几版 |
 | is_active | boolean | 软删除标记（真正的清理由清理任务完成） |
 | created_at / updated_at | timestamptz | |
+
+**局部唯一索引（T22b：重复上传竞态兜底）**
+
+```sql
+CREATE UNIQUE INDEX uq_documents_kb_md5_active
+  ON documents (kb_id, file_md5)
+  WHERE is_active = true;
+```
+
+> **为什么需要它**：`file_md5` 的去重判断在**上传接口**（`ensure_not_duplicate` → 409）完成，
+> 但 documents 行由 **worker 异步创建** —— worker 还没建行时连传两次，两次都判为"不重名"，
+> 会入库两行。此索引把"同一 kb 内存在两行相同 md5 的活跃文档"变成**数据库层面的不可能**。
+> **`WHERE is_active = true`**：软删行不参与约束，故删除某文档后重传同一文件不会被拦
+> （软删行保留用于追溯，见第四节"删除与合规"）。
+> worker 侧命中该约束时抛 `DuplicateIngestError`，把第二个任务标 `done` 并复用已有 `doc_id`（不重试、不标 failed）。
 
 ### 2.4 chunks（★ 最关键的表）
 
