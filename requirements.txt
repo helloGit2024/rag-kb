@@ -19,8 +19,12 @@ httpx>=0.27
 # 为什么不用 boto3：只需 S3 基础能力，minio SDK 更轻、API 更直观。
 # 它同时兼容 silo（MinIO 社区延续）与以后要迁的阿里云 OSS（都走 S3 协议）。
 minio>=7.2
+# pyyaml：评估集 golden_set.yaml 的解析（T28）。此前靠传递依赖碰巧存在，
+# 直接 import 的依赖必须显式声明——传递依赖随时可能消失。
+pyyaml==6.0.3
 
 # ── 开发依赖 ────────────────────────────────────────────
 ruff>=0.8
 mypy>=1.13
+types-pyyaml>=6.0.12  # mypy 检查 loader.py 的 import yaml（T28）
 pytest>=8.3

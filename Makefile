@@ -4,7 +4,7 @@
 # 每个命令都用大白话说清楚它干什么。
 # V-1 只保留当前阶段需要的命令；migrate / eval 等在后续版本加入。
 
-.PHONY: help dev down logs test lint scan clean migrate migrate-down
+.PHONY: help dev down logs test lint scan clean migrate migrate-down eval
 
 help:  ## 显示所有可用命令
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -57,6 +57,15 @@ lint:  ## 检查代码规范与类型错误
 
 scan:  ## 扫描误提交的密钥（上线前必须跑）
 	$(GITLEAKS) detect --no-banner --redact
+
+# ── 评估 ────────────────────────────────────────────────
+PYTHON    ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
+
+eval:  ## 跑评估集（V0.1 30 题三层指标，结果写 eval_runs / eval_run_items）
+	@set -a; . ./.env; set +a; \
+	DATABASE_URL=$$(printf '%s' "$$DATABASE_URL" | sed 's/@postgres:/@localhost:/'); \
+	export DATABASE_URL; \
+	PYTHONPATH=. $(PYTHON) -m app.eval.runner $(ARGS)
 
 # ── 清理 ────────────────────────────────────────────────
 clean:  ## 清理构建产物与临时文件（不动数据卷）

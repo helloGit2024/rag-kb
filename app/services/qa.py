@@ -25,14 +25,18 @@ from app.core.cache import (
     set_answer,
 )
 from app.core.embedding import embed_texts
-from app.repos.chunk_repo import search_chunks
+from app.repos.chunk_repo import ChunkHit, search_chunks
 from app.services.generator import Citation, generate_answer
 from app.services.permission import scope_fingerprint
 
 
 @dataclass
 class QaResult:
-    """一次问答的完整结果（引用为 generator.Citation，由 API 层映射成契约字段）。"""
+    """一次问答的完整结果（引用为 generator.Citation，由 API 层映射成契约字段）。
+
+    prompt_tokens / completion_tokens 仅 run_chain（无缓存路径）填真实值；
+    缓存命中回放时为 0——命中分支没有真的调用模型（T32 成本埋点以此为据）。
+    """
 
     answer: str
     refused: bool
@@ -40,6 +44,44 @@ class QaResult:
     retrieve_ms: int
     generate_ms: int
     latency_ms: int
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+
+def run_chain(
+    question: str,
+    *,
+    top_k: int = 5,
+    scope_keys: list[str],
+    kb_ids: list[int] | None = None,
+) -> tuple[QaResult, list[ChunkHit]]:
+    """无缓存跑完整链路（嵌入 → 检索 → 生成），返回结果与检索命中块。
+
+    ★ 评估口径要求"无缓存命中"（.trae/rules/eval.md 第四节）：T28 的评估
+      编排直接调本函数；answer_question 的未命中分支同样走这里——
+      在线与评估共用一条链，不分叉。
+    ★ 参数校验由调用方负责（与 answer_question 同一约定）。
+    """
+    t0 = time.perf_counter()
+    query_vec = embed_texts([question])[0]
+    hits = search_chunks(query_vec, scope_keys, top_k=top_k, kb_ids=kb_ids)
+    t1 = time.perf_counter()
+    gen = generate_answer(question, hits)
+    t2 = time.perf_counter()
+
+    retrieve_ms = round((t1 - t0) * 1000)
+    generate_ms = round((t2 - t1) * 1000)
+    result = QaResult(
+        answer=gen.answer,
+        refused=gen.refused,
+        citations=gen.citations,
+        retrieve_ms=retrieve_ms,
+        generate_ms=generate_ms,
+        latency_ms=retrieve_ms + generate_ms,
+        prompt_tokens=gen.prompt_tokens,
+        completion_tokens=gen.completion_tokens,
+    )
+    return result, hits
 
 
 def answer_question(
@@ -101,23 +143,9 @@ def answer_question(
         )
         return result
 
-    # ② 未命中：跑完整链路
-    t0 = time.perf_counter()
-    query_vec = embed_texts([question])[0]
-    hits = search_chunks(query_vec, scope_keys, top_k=top_k, kb_ids=kb_ids)
-    t1 = time.perf_counter()
-    gen = generate_answer(question, hits)
-    t2 = time.perf_counter()
-
-    retrieve_ms = round((t1 - t0) * 1000)
-    generate_ms = round((t2 - t1) * 1000)
-    result = QaResult(
-        answer=gen.answer,
-        refused=gen.refused,
-        citations=gen.citations,
-        retrieve_ms=retrieve_ms,
-        generate_ms=generate_ms,
-        latency_ms=retrieve_ms + generate_ms,
+    # ② 未命中：跑完整链路（与评估共用的无缓存路径）
+    result, hits = run_chain(
+        question, top_k=top_k, scope_keys=scope_keys, kb_ids=kb_ids
     )
 
     retrieved_chunk_ids = [h.chunk_id for h in hits]
