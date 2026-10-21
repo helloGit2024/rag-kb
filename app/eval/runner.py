@@ -638,6 +638,7 @@ def main() -> int:
                 expected_answer=item.expected_answer,
                 hits=hits,
                 actual_answer=result.answer or "",
+                should_refuse=item.should_refuse,
                 model=judge_model,
                 template=judge_tpl,
             )

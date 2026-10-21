@@ -29,7 +29,7 @@ from app.core.llm_gateway import GatewayError, chat
 from app.repos.chunk_repo import ChunkHit
 from app.services.pii import redact_pii
 
-PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "judge_v1.md"
+PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "judge_v2.md"
 
 # 解析失败时最多再补问 1 次（模型偶尔会絮叨输出 JSON 以外的内容）
 _MAX_ATTEMPTS = 2
@@ -91,14 +91,24 @@ def render_prompt(
     expected_answer: str,
     retrieved_context: str,
     actual_answer: str,
+    should_refuse: bool,
 ) -> str:
-    """str.replace 而非 format——题目与答案文本可能含花括号。"""
-    return (
+    """str.replace 而非 format——题目与答案文本可能含花括号。
+
+    末尾校验占位符是否残留：模板改了但调用方没同步传参，会让裁判看到
+    字面量 `{{should_refuse}}` 并据此乱判（v1 的教训），必须在发请求前炸掉。
+    """
+    rendered = (
         template.replace("{{question}}", question)
         .replace("{{expected_answer}}", expected_answer)
         .replace("{{retrieved_context}}", retrieved_context)
         .replace("{{actual_answer}}", actual_answer)
+        .replace("{{should_refuse}}", "是" if should_refuse else "否")
     )
+    leftover = re.findall(r"\{\{[a-z_]+\}\}", rendered)
+    if leftover:
+        raise ValueError(f"提示词模板存在未替换的占位符：{sorted(set(leftover))}")
+    return rendered
 
 
 # ── 解析（纯函数，测试直接喂已知输入）─────────────────────────────────────────
@@ -184,11 +194,16 @@ def judge_answer(
     expected_answer: str,
     hits: list[ChunkHit],
     actual_answer: str,
+    should_refuse: bool,
     model: str,
     template: str | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> JudgeOutcome:
-    """跑一题裁判。解析失败重试 1 次；仍败返回 scores=None + error（不中断 run）。"""
+    """跑一题裁判。解析失败重试 1 次；仍败返回 scores=None + error（不中断 run）。
+
+    should_refuse 必须由调用方（题目字段）显式传入：v1 让裁判从标准答案
+    文本自行推断，14b 推断错误导致误标 must_refuse_but_answered（run 31）。
+    """
     tpl = template if template is not None else load_template()
     prompt = render_prompt(
         tpl,
@@ -196,6 +211,7 @@ def judge_answer(
         expected_answer=expected_answer,
         retrieved_context=build_retrieved_context(hits),
         actual_answer=actual_answer,
+        should_refuse=should_refuse,
     )
     messages = [{"role": "user", "content": prompt}]
 
