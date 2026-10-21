@@ -46,6 +46,8 @@
 #   expected_sources  标准来源文档名（Recall@K 的判定依据）
 #   should_refuse     该题系统该不该拒答（refuse 类必须为 true）
 #   scope_keys        权限类题目用：该题设定的提问者可见范围（逗号分隔可写多个）
+#   judge             可选，默认 model。human = 跳过裁判模型、进待人工评分清单
+#                     （judge-prompt.md 第四节：权限判断/精确数字/标准答案拿不准的题）
 #   notes             出题理由
 #
 # 标注进度：100 / 100 条已完成标准答案草拟；其中 30 条（V0.1）已人工确认，
@@ -177,6 +179,7 @@
     - "财务报销制度.txt#差旅标准"
   should_refuse: false
   scope_keys: "internal"
+  judge: human
   notes: "数字精确性；与 Q030 配对使用"
 
 - id: Q009
@@ -223,6 +226,7 @@
     - "信息安全管理制度.txt#账号与口令"
   should_refuse: false
   scope_keys: "internal"
+  judge: human
   notes: "数字精确性"
 
 - id: Q012
@@ -1131,6 +1135,7 @@
   expected_sources: []
   should_refuse: true
   scope_keys: "internal"
+  judge: human
   notes: "★ 时间错配陷阱。目前预期会失败——保留它，它正在指出真实存在的问题"
 
 # ── V1.0 新增 refuse（Q080—Q093）──
@@ -1347,6 +1352,7 @@
     - "财务报销制度.txt#差旅标准"
   should_refuse: false
   scope_keys: "internal"
+  judge: human
   notes: "★ 复合多子问题 + 数字精确性，与 Q008 配对"
 
 # ── V1.0 新增 edge（Q094—Q100）──

@@ -21,10 +21,10 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.repos.models import EvalDataset, EvalRun, EvalRunItem
@@ -137,6 +137,42 @@ def create_run(
     session.add(run)
     session.commit()
     return run.id
+
+
+def cleanup_hanging_runs(
+    session: Session, *, max_age_minutes: int = 50
+) -> int:
+    """把所有 status=running 且 started_at 超过阈值的 run 批量标 failed。
+
+    阈值默认 50min = 历史最长 run（裁判模式 23.8min）的 2 倍留余量 ——
+    保证正常评估永远不会被误清理，只有进程被硬杀后 N 小时才触发。
+
+    这类 run 只能来自进程被硬杀（OS 层崩溃）——Python 层异常 main() 的
+    try/except 会正确落 failed 并 commit。硬杀时数据库可能仍在，
+    所以下次启动时用新 session 补一条 UPDATE 即可。
+
+    错误原因写 "cleanup: 检测到 hanging run（上一次运行被硬中断）"。
+    返回被清理的 run 数量；没僵尸时返回 0（不报错，幂等）。
+    """
+    cutoff = datetime.now(UTC) - timedelta(minutes=max_age_minutes)
+    stmt = (
+        update(EvalRun)
+        .where(EvalRun.status == "running")
+        .where(EvalRun.started_at < cutoff)
+        .values(
+            status="failed",
+            error_reason=(
+                "cleanup: 检测到 hanging run（上一次运行被硬中断，"
+                f"超过 {max_age_minutes} 分钟仍停留在 running）"
+            ),
+            finished_at=datetime.now(UTC),
+        )
+    )
+    result = session.execute(stmt)
+    session.commit()
+    # SQLAlchemy ExecutableResult 类型提示未显式暴露 rowcount，但
+    # update() 与 delete() 执行后一定返回受影响行数；显式 cast 让 mypy 通过
+    return int(getattr(result, "rowcount", 0) or 0)
 
 
 def get_run(session: Session, run_id: int) -> EvalRun:

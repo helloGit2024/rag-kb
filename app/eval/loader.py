@@ -24,7 +24,10 @@ from app.repos import eval_repo
 CATEGORIES = frozenset({"normal", "refuse", "permission", "edge"})
 
 DATASET_NAME = "golden-v1-30"
-DATASET_VERSION = "1.0.0"
+# 1.0.0 → 1.0.1（2026-10-21，T29）：Q008/Q011/Q027/Q030 增加 judge: human 字段
+# （judge-prompt.md 第四节既定机制），题目与标准答案未动。内容变了 checksum
+# 必变，按 R14 升版本重新注册，不偷改旧版。
+DATASET_VERSION = "1.0.1"
 REPO_PATH = "evals/golden_set.yaml"
 
 # golden_set 的 scope_keys 字段 → 评估专用账号（scripts/seed_users.py 已灌库）。
@@ -59,6 +62,9 @@ class GoldenItem:
     expected_sources: list[str] = field(default_factory=list)
     should_refuse: bool = False
     scope_keys: str = "public"
+    # judge: human = 跳过裁判模型、进待人工评分清单（judge-prompt.md 第四节：
+    # 权限判断/精确数字/标准答案拿不准的题不交给模型裁判）
+    judge: str = "model"
     notes: str = ""
 
     @property
@@ -182,6 +188,7 @@ def _parse_item(entry: dict) -> GoldenItem:
         expected_sources=[str(s) for s in sources],
         should_refuse=bool(entry.get("should_refuse", False)),
         scope_keys=str(entry.get("scope_keys", "public")).strip(),
+        judge=str(entry.get("judge", "model")).strip(),
         notes=str(entry.get("notes", "")),
     )
 
@@ -201,6 +208,10 @@ def _validate(items: list[GoldenItem]) -> None:
         if item.category == "refuse" and not item.should_refuse:
             raise GoldenSetError(
                 f"{item.item_id} 是 refuse 类但 should_refuse 不是 true"
+            )
+        if item.judge not in ("model", "human"):
+            raise GoldenSetError(
+                f"{item.item_id} 的 judge={item.judge!r} 不在枚举内 ['human', 'model']"
             )
         # 身份映射此刻就验掉，避免跑到一半才在某一题上炸（R7：错得起始时间可定位）
         _ = item.username
