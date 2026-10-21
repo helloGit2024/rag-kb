@@ -261,12 +261,12 @@ class TestCleanupHangingRuns:
             for run_id in (r1, r2):
                 r = session.get(EvalRun, run_id)
                 assert r is not None
-                r.started_at = now - timedelta(minutes=30)
+                r.started_at = now - timedelta(minutes=55)  # 超过 50min 阈值
             session.commit()
 
-        # 调用清理（默认 15 分钟阈值）
+        # 调用清理（显式 50 分钟阈值，与 runner 入口一致）
         with Session(pg) as session:
-            n = cleanup_hanging_runs(session)
+            n = cleanup_hanging_runs(session, max_age_minutes=50)
             assert n == 2
 
         with Session(pg) as session:
@@ -285,8 +285,8 @@ class TestCleanupHangingRuns:
                            config_snapshot={}, model_config_ids=None)
         # 刚建的 run started_at 默认就是当前时间，在阈值内
         with Session(pg) as session:
-            n = cleanup_hanging_runs(session)  # 默认 15 分钟阈值
-            assert n == 0, "近 15 分钟的 running 不应被清"
+            n = cleanup_hanging_runs(session, max_age_minutes=50)
+            assert n == 0, "近 50 分钟的 running 不应被清"
             assert session.get(EvalRun, r).status == "running"  # type: ignore[union-attr]
 
     def test_done_and_failed_not_touched(self, pg: Engine) -> None:
@@ -304,7 +304,7 @@ class TestCleanupHangingRuns:
             r.started_at = datetime.now(UTC) - timedelta(minutes=120)
             session.commit()
         with Session(pg) as session:
-            n = cleanup_hanging_runs(session)
+            n = cleanup_hanging_runs(session, max_age_minutes=50)
             assert n == 0
             r = session.get(EvalRun, run_id)
             assert r is not None and r.status == "done", "done run 不能被改状态"
@@ -313,5 +313,5 @@ class TestCleanupHangingRuns:
         """没有僵尸 → 返回 0（幂等，下次启动调一次也没问题）。"""
         _register(pg, name=f"{NAME_PREFIX}-cleanup-empty")
         with Session(pg) as session:
-            n = cleanup_hanging_runs(session)
+            n = cleanup_hanging_runs(session, max_age_minutes=50)
             assert n == 0

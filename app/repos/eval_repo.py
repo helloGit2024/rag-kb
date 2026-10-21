@@ -140,9 +140,12 @@ def create_run(
 
 
 def cleanup_hanging_runs(
-    session: Session, *, max_age_minutes: int = 15
+    session: Session, *, max_age_minutes: int = 50
 ) -> int:
     """把所有 status=running 且 started_at 超过阈值的 run 批量标 failed。
+
+    阈值默认 50min = 历史最长 run（裁判模式 23.8min）的 2 倍留余量 ——
+    保证正常评估永远不会被误清理，只有进程被硬杀后 N 小时才触发。
 
     这类 run 只能来自进程被硬杀（OS 层崩溃）——Python 层异常 main() 的
     try/except 会正确落 failed 并 commit。硬杀时数据库可能仍在，

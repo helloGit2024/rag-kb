@@ -649,7 +649,8 @@ def main() -> int:
         # T28b：清理上一次被硬中断（OS 层崩溃）残留的僵尸 run
         # ——Python 层异常的 main() except 会正确落 failed；只有硬杀
         # 才会跳过 Python，所以下次启动时用新 session 补一条 UPDATE 即可
-        n_cleaned = eval_repo.cleanup_hanging_runs(session)
+        # 阈值 50min = 历史最长 run（裁判模式 23.8min）× 2 留余量
+        n_cleaned = eval_repo.cleanup_hanging_runs(session, max_age_minutes=50)
         if n_cleaned:
             print(
                 f"[cleanup] 标记了 {n_cleaned} 条僵尸 run 为 failed",
