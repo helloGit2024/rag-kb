@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import socket
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -26,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.repos.eval_repo import (
     activate_dataset,
+    cleanup_hanging_runs,
     create_run,
     finish_run,
     get_run,
@@ -233,3 +235,83 @@ class TestEvalRepo:
             with pytest.raises(IntegrityError):
                 insert_run_items(session, run_id, [bad])
                 session.flush()
+
+
+class TestCleanupHangingRuns:
+    """T28b：硬中断残留的僵尸 run → 下次启动时批量标 failed。
+
+    成因已证实：Python 层异常 main() 的 except 会正确落 failed 并 commit
+    （实验：boom_chain 抛异常后 run 40 持久化 failed）；只有 OS 层硬杀
+    才会让 run 永久停在 running。
+    """
+
+    def test_cleans_old_running_runs(self, pg: Engine) -> None:
+        """running + started_at 很久以前 → 批量标 failed，备注写 cleanup。"""
+        ds_id = _register(pg, name=f"{NAME_PREFIX}-cleanup-old")
+        with Session(pg) as session:
+            r1 = create_run(session, dataset_id=ds_id, git_commit="a" * 7,
+                            config_snapshot={}, model_config_ids=None)
+            r2 = create_run(session, dataset_id=ds_id, git_commit="b" * 7,
+                            config_snapshot={}, model_config_ids=None)
+            # 造僵尸：手动把两个 run 的 started_at 改成 30 分钟前（超过阈值）
+            now = datetime.now(UTC)
+            session.execute(
+                select(EvalRun).where(EvalRun.id.in_([r1, r2]))
+            ).scalars().all()
+            for run_id in (r1, r2):
+                r = session.get(EvalRun, run_id)
+                assert r is not None
+                r.started_at = now - timedelta(minutes=30)
+            session.commit()
+
+        # 调用清理（默认 15 分钟阈值）
+        with Session(pg) as session:
+            n = cleanup_hanging_runs(session)
+            assert n == 2
+
+        with Session(pg) as session:
+            for run_id in (r1, r2):
+                r = session.get(EvalRun, run_id)
+                assert r is not None
+                assert r.status == "failed"
+                assert r.error_reason is not None and "cleanup" in r.error_reason
+                assert r.finished_at is not None
+
+    def test_young_running_runs_preserved(self, pg: Engine) -> None:
+        """running 但 started_at 很近（未到阈值） → 不动它。"""
+        ds_id = _register(pg, name=f"{NAME_PREFIX}-cleanup-young")
+        with Session(pg) as session:
+            r = create_run(session, dataset_id=ds_id, git_commit="a" * 7,
+                           config_snapshot={}, model_config_ids=None)
+        # 刚建的 run started_at 默认就是当前时间，在阈值内
+        with Session(pg) as session:
+            n = cleanup_hanging_runs(session)  # 默认 15 分钟阈值
+            assert n == 0, "近 15 分钟的 running 不应被清"
+            assert session.get(EvalRun, r).status == "running"  # type: ignore[union-attr]
+
+    def test_done_and_failed_not_touched(self, pg: Engine) -> None:
+        """done / failed 状态的 run 不被 cleanup 碰。"""
+        ds_id = _register(pg, name=f"{NAME_PREFIX}-cleanup-done")
+        with Session(pg) as session:
+            run_id = create_run(session, dataset_id=ds_id, git_commit="a" * 7,
+                                 config_snapshot={}, model_config_ids=None)
+            finish_run(session, run_id, status="done",
+                       metrics={"ok": True}, wall_time_s=42)
+        # 造 old 但 status=done
+        with Session(pg) as session:
+            r = session.get(EvalRun, run_id)
+            assert r is not None
+            r.started_at = datetime.now(UTC) - timedelta(minutes=120)
+            session.commit()
+        with Session(pg) as session:
+            n = cleanup_hanging_runs(session)
+            assert n == 0
+            r = session.get(EvalRun, run_id)
+            assert r is not None and r.status == "done", "done run 不能被改状态"
+
+    def test_zero_cleanup_when_nothing_hanging(self, pg: Engine) -> None:
+        """没有僵尸 → 返回 0（幂等，下次启动调一次也没问题）。"""
+        _register(pg, name=f"{NAME_PREFIX}-cleanup-empty")
+        with Session(pg) as session:
+            n = cleanup_hanging_runs(session)
+            assert n == 0
