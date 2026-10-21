@@ -110,7 +110,7 @@
 
 | ID | 任务 | 依赖 | 验收标准 | 验收难度 |
 |----|------|------|---------|---------|
-| T28 | 评估脚本（读 golden_set，跑三层指标） | T08,T33 | `make eval` 输出指标表 | 需你帮我验 |
+| T28 | 评估脚本（读 golden_set，跑三层指标） ✅ **已完成**（2026-10-20：`app/eval/` 新包——`loader.py`（golden_set 加载 + 轻量校验 + sha256 checksum 注册/复用/**不一致拒绝开始**（R14）+ scope_keys→erin/alice/carol/dave 身份映射）与 `runner.py`（逐题**无缓存**链路→三层指标→指标表 + `evals/report/` + `evals/failures/`；检索锁 kb 534 防演示文档污染；脏工作区拒绝开始（`--allow-dirty` 覆盖）；Q028 合成 2400 字验 schema 拦截零模型调用；链路异常 run 标 failed 并上抛（R7））；`qa.py` 抽 `run_chain` 在线/评估共链；`eval_repo` 补 name+version 查询；`make eval` 落地；requirements 显式声明 pyyaml。`make lint` 全过、`make test` 242 passed（+16）。真机首跑 **run_id=14**（30 items 落库含 answer 全文，复验 T33 遗留项）：Recall@5=1.000 / MRR=1.000 ✅，上下文精确度 0.590 / 任务完成率 0.857 / 拒答正确率 0.778 / 误拒率 0.143 / P95 18.95s ❌——**基线如实记录，不达标项即 V1 改进对象**；Q020 已核实**非越权**（命中块全部来自 alice 可见的 public/internal 文档，研发流程规范被正确过滤，属"错文档作答"相关性问题）） | T08,T33 | `make eval` 输出指标表 | 需你帮我验 |
 | T29 | 裁判模型评分（忠实度 / 相关性 / 引用准确率） | T28 | 输出逐条评分 + 理由 | 需你帮我验 |
 | T30 | 补足评估集到 30 条（含 refuse 6 / permission 4 / edge 2） | T27 | 30 条全部有**我确认过的**标准答案 | **我能验收** |
 | T31 | 建立第一份基线数字 + `make eval-compare` | T28 | 能一键对比两次评估结果 | 我能验收 |

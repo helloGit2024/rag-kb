@@ -26,3 +26,7 @@ Thumbs.db
 # 前端（V0.1 才有，先占位）
 node_modules/
 .next/
+
+# 评估产物（事实来源是 eval_runs/eval_run_items 表，文件是衍生镜像）
+evals/report/
+evals/failures/

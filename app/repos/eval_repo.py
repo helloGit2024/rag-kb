@@ -96,6 +96,21 @@ def get_dataset(session: Session, dataset_id: int) -> EvalDataset:
     return dataset
 
 
+def find_dataset_by_name_version(
+    session: Session, *, name: str, version: str
+) -> EvalDataset | None:
+    """按 (name, version) 查数据集（uq_dataset_name_ver）；不存在返回 None。
+
+    与 get_dataset 的分工：这里用于"注册前先看看在不在"（None 是正常分支），
+    get_dataset 用于"必须存在、不在是异常"（R7 显式失败）。
+    """
+    return session.execute(
+        select(EvalDataset).where(
+            EvalDataset.name == name, EvalDataset.version == version
+        )
+    ).scalar_one_or_none()
+
+
 def create_run(
     session: Session,
     *,
