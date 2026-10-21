@@ -679,6 +679,7 @@ class TestJudgeAnswer:
         out = judge_answer(
             question="年假几天", expected_answer="5 天",
             hits=self._hits(), actual_answer="满 1 年 5 天 [1]",
+            should_refuse=False,
             model="judge-fake", template="Q{{question}}",
             transport=self._transport([perfect]),
         )
@@ -691,7 +692,8 @@ class TestJudgeAnswer:
         """第一次输出非 JSON → 补问 1 次成功；Token 两次都记账。"""
         out = judge_answer(
             question="q", expected_answer="e", hits=self._hits(),
-            actual_answer="a", model="judge-fake", template="t",
+            actual_answer="a", should_refuse=False, model="judge-fake",
+            template="t",
             transport=self._transport(["先聊聊……", _VALID_JUDGE_JSON]),
         )
         assert out.scores is not None
@@ -701,9 +703,47 @@ class TestJudgeAnswer:
         """两次都产不出合法 JSON → scores=None + error，不抛异常（不中断 run）。"""
         out = judge_answer(
             question="q", expected_answer="e", hits=self._hits(),
-            actual_answer="a", model="judge-fake", template="t",
+            actual_answer="a", should_refuse=False, model="judge-fake",
+            template="t",
             transport=self._transport(["废话一", "废话二"]),
         )
         assert out.scores is None and out.verdict is None
         assert "裁判失败" in out.error
         assert (out.prompt_tokens, out.completion_tokens) == (100, 20)
+
+    def test_should_refuse_placeholder_rendered(self) -> None:
+        """v2 关键修复：应拒答标志必须显式传给裁判（v1 让模型自己推断 → 误判）。"""
+        seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.read().decode())
+            return httpx.Response(200, json={
+                "choices": [{"message": {"role": "assistant",
+                                         "content": _VALID_JUDGE_JSON}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1,
+                          "total_tokens": 2},
+                "model": "judge-fake",
+            })
+
+        judge_answer(
+            question="公司量子系统怎么用", expected_answer="明确拒答",
+            hits=self._hits(), actual_answer=REFUSAL_TEXT,
+            should_refuse=True, model="judge-fake",
+            template="应拒答={{should_refuse}}\nANSWER_START\n{{actual_answer}}\n"
+                     "ANSWER_END",
+            transport=httpx.MockTransport(handler),
+        )
+        body = seen[0]
+        assert "应拒答=是" in body
+        assert "{{" not in body, "占位符必须全部替换，不能把字面量喂给裁判"
+        assert "ANSWER_START" in body and REFUSAL_TEXT in body
+
+    def test_leftover_placeholder_raises(self) -> None:
+        """模板有未知占位符 → 发请求前显式失败（R7），不让裁判看到字面量。"""
+        with pytest.raises(ValueError, match="未替换的占位符"):
+            judge_answer(
+                question="q", expected_answer="e", hits=self._hits(),
+                actual_answer="a", should_refuse=False, model="judge-fake",
+                template="{{mystery_field}}",
+                transport=self._transport([_VALID_JUDGE_JSON]),
+            )
