@@ -5,8 +5,9 @@
   · 评估检索**锁定 KB**（--kb-id，默认 534 评估语料库）：kb1/2/3 的演示文档
     与评估语料内容重叠（如 ragkb_sample_年假制度.txt），不锁定会让 Recall@5
     被无关文档污染、基线不可复现；
-  · 第 2 层指标（忠实度/答案相关性/引用准确率）由 T29 裁判模型补齐，
-    本任务 metrics 里置 null、报告里显示 "—"；
+  · 第 2 层指标（忠实度/答案相关性/引用准确率）由裁判模型产出（T29）：
+    仅 normal/edge 且 judge=model 的题跑裁判（judge-prompt.md 第五节——
+    能用规则判断的不用模型）；裁判失败不中断 run，该题维度置 null；
   · 逐条结果必须落 eval_run_items 且含 answer 全文——只存汇总指标的评估
     等于没评估（无法回答"哪几条从通过变失败"）。
 
@@ -31,6 +32,14 @@ from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from app.eval.judge import (
+    JudgeOutcome,
+    judge_answer,
+    judge_model_from_env,
+)
+from app.eval.judge import (
+    load_template as load_judge_template,
+)
 from app.eval.loader import (
     DATASET_NAME,
     DATASET_VERSION,
@@ -59,11 +68,14 @@ DEFAULT_KB_ID = 534  # 评估语料库（8 份人工确认文档，2026-10-20 �
 OVERSIZE_ITEM_ID = "Q028"
 _OVERSIZE_QUESTION = "年假怎么算？" * 400  # 6 字 × 400 = 2400 字 > 2000 上限
 
-# 指标及格线（evals/README.md 第二节；第 2 层 T29 补齐后同样按此判定）
+# 指标及格线（evals/README.md 第二节）
 _TARGETS = {
     "recall_at_5": (">=", 0.85),
     "mrr": (">=", 0.70),
     "context_precision": (">=", 0.70),
+    "faithfulness": (">=", 0.85),
+    "answer_relevance": (">=", 0.80),
+    "citation_accuracy": (">=", 0.90),
     "task_completion": (">=", 0.90),
     "refusal_accuracy": (">=", 0.90),
     "false_refusal_rate": ("<=", 0.05),
@@ -74,11 +86,19 @@ _TARGETS = {
 
 @dataclass
 class ItemOutcome:
-    """一题的运行结果（to_row 落成 eval_run_items 一行）。"""
+    """一题的运行结果（to_row 落成 eval_run_items 一行）。
+
+    status / verdict 语义（data-model 2.13，T29 修正）：
+      status = pass / fail —— **行为判定**（该拒的拒了没、不该拒的答了没）；
+      verdict = correct / hallucination / off_topic / wrong_number /
+                over_refusal / under_refusal —— **裁判判定**，
+                未跑裁判（refuse/permission/human 题）或裁判失败为 null。
+    """
 
     item: GoldenItem
-    verdict: str  # pass / fail
+    status: str  # pass / fail（行为判定）
     scores: dict
+    verdict: str | None = None  # 裁判判定（可空，data-model 2.13）
     retrieval_hit: bool | None = None
     retrieved_chunk_ids: list[int] = field(default_factory=list)
     answer: str | None = None
@@ -95,7 +115,7 @@ class ItemOutcome:
             item_id=self.item.item_id,
             category=self.item.category,
             question=self.item.question,
-            status="done",
+            status=self.status,
             scores=self.scores,
             verdict=self.verdict,
             retrieval_hit=self.retrieval_hit,
@@ -165,6 +185,10 @@ def aggregate(outcomes: list[ItemOutcome]) -> dict:
     should_refuse = [o for o in outcomes if o.item.should_refuse]
     answerable = [o for o in outcomes if not o.item.should_refuse]
     timed = [o.latency_ms for o in outcomes if o.count_in_latency]
+    # 第 2 层分母 = 裁判**成功**的题数（裁判失败置 null 的题不进均值——
+    # 分母口径必须诚实，否则"裁判全挂"会伪装成"指标满分"）
+    judged = [o for o in outcomes if o.scores["faithfulness"] is not None]
+    numeric = [o for o in judged if o.scores["numeric_accuracy"] is not None]
 
     return {
         "layer1": {
@@ -174,14 +198,23 @@ def aggregate(outcomes: list[ItemOutcome]) -> dict:
             "sample_size": len(layer1),
         },
         "layer2": {
-            "faithfulness": None,
-            "answer_relevance": None,
-            "citation_accuracy": None,
-            "note": "T29 裁判模型评分补齐",
+            "faithfulness": _mean([o.scores["faithfulness"] for o in judged]),
+            "answer_relevance": _mean(
+                [o.scores["answer_relevance"] for o in judged]
+            ),
+            "citation_accuracy": _mean(
+                [o.scores["citation_accuracy"] for o in judged]
+            ),
+            # 附加维度：进报告供人工参考，不进及格线判定（项目所有者 2026-10-21 裁决）
+            "completeness": _mean([o.scores["completeness"] for o in judged]),
+            "numeric_accuracy": _mean(
+                [o.scores["numeric_accuracy"] for o in numeric]
+            ),
+            "sample_size": len(judged),
         },
         "layer3": {
             "task_completion": _mean(
-                [1.0 if o.verdict == "pass" else 0.0 for o in answerable]
+                [1.0 if o.status == "pass" else 0.0 for o in answerable]
             ),
             "refusal_accuracy": _mean(
                 [1.0 if o.refused else 0.0 for o in should_refuse]
@@ -203,11 +236,15 @@ def aggregate(outcomes: list[ItemOutcome]) -> dict:
         "tokens": {
             "prompt": sum(o.scores["prompt_tokens"] for o in outcomes),
             "completion": sum(o.scores["completion_tokens"] for o in outcomes),
+            "judge_prompt": sum(o.scores["judge_prompt_tokens"] for o in outcomes),
+            "judge_completion": sum(
+                o.scores["judge_completion_tokens"] for o in outcomes
+            ),
         },
         "items": {
             "total": len(outcomes),
-            "passed": sum(1 for o in outcomes if o.verdict == "pass"),
-            "failed": sum(1 for o in outcomes if o.verdict == "fail"),
+            "passed": sum(1 for o in outcomes if o.status == "pass"),
+            "failed": sum(1 for o in outcomes if o.status == "fail"),
         },
     }
 
@@ -224,7 +261,7 @@ def _run_oversize_item(item: GoldenItem) -> ItemOutcome:
     except ValidationError:
         return ItemOutcome(
             item=item,
-            verdict="pass",
+            status="pass",
             scores=_zero_scores(),
             count_in_latency=False,
             notes=(
@@ -234,7 +271,7 @@ def _run_oversize_item(item: GoldenItem) -> ItemOutcome:
         )
     return ItemOutcome(
         item=item,
-        verdict="fail",
+        status="fail",
         scores=_zero_scores(),
         count_in_latency=False,
         notes="超长问题未被 schema 校验拦截——成本防护失效（Q028 硬性要求）",
@@ -249,21 +286,33 @@ def _zero_scores() -> dict:
         "faithfulness": None,
         "answer_relevance": None,
         "citation_accuracy": None,
+        "completeness": None,
+        "numeric_accuracy": None,
+        "judge_reasoning": "",
         "prompt_tokens": 0,
         "completion_tokens": 0,
+        "judge_prompt_tokens": 0,
+        "judge_completion_tokens": 0,
     }
 
 
 def _score_chain_item(
-    item: GoldenItem, result: QaResult, hits: list[ChunkHit]
+    item: GoldenItem,
+    result: QaResult,
+    hits: list[ChunkHit],
+    judge_outcome: JudgeOutcome | None = None,
 ) -> ItemOutcome:
-    """正常链路题：算第 1 层得分并按 should_refuse 判定 verdict。
+    """正常链路题：算第 1 层得分、行为判定（status），并入裁判结果（verdict）。
 
-    verdict 判定（内容质量如"要点覆盖率"由 T29 裁判模型补，本层只看行为）：
+    status 判定（行为层）：
       - should_refuse=true（refuse/permission）：refused=true 才 pass。
         permission 题检索必为空 → 答案必为固定拒答句，天然满足
         "不得出现目标文档片段"的硬性要求；
       - should_refuse=false（normal/edge）：refused=false 才 pass。
+
+    裁判结果（judge_outcome 非 None 时）：
+      - 裁判成功：五维度分数 + reasoning 进 scores，verdict 取裁判推导值；
+      - 裁判失败：维度保持 null，错误写入 notes（题不背锅，但必须显式记录）。
     """
     scores = _zero_scores()
     retrieval_hit: bool | None = None
@@ -282,9 +331,37 @@ def _score_chain_item(
     else:
         ok = not result.refused
         notes = "" if ok else "误拒（库里本有答案）"
+
+    verdict: str | None = None
+    if judge_outcome is not None:
+        scores["judge_prompt_tokens"] = judge_outcome.prompt_tokens
+        scores["judge_completion_tokens"] = judge_outcome.completion_tokens
+        if judge_outcome.scores is None:
+            notes = f"{notes}；{judge_outcome.error}" if notes else judge_outcome.error
+        else:
+            js = judge_outcome.scores
+            scores.update(
+                {
+                    "faithfulness": js.faithfulness,
+                    "answer_relevance": js.answer_relevancy,
+                    "completeness": js.completeness,
+                    "numeric_accuracy": js.numeric_accuracy,
+                    "citation_accuracy": js.citation_accuracy,
+                    "judge_reasoning": js.reasoning,
+                }
+            )
+            verdict = judge_outcome.verdict
+            if js.critical_issue == "leaked_restricted_content":
+                leak = (
+                    "裁判报告 leaked_restricted_content（不在 verdict 枚举内，"
+                    "verdict 置 null），需人工复核"
+                )
+                notes = f"{notes}；{leak}" if notes else leak
+
     return ItemOutcome(
         item=item,
-        verdict="pass" if ok else "fail",
+        status="pass" if ok else "fail",
+        verdict=verdict,
         scores=scores,
         retrieval_hit=retrieval_hit,
         retrieved_chunk_ids=[h.chunk_id for h in hits],
@@ -297,17 +374,23 @@ def _score_chain_item(
     )
 
 
+JudgeFn = Callable[[GoldenItem, QaResult, list[ChunkHit]], JudgeOutcome]
+
+
 def run_all_items(
     session: Session,
     items: list[GoldenItem],
     *,
     kb_id: int,
     chain: ChainFn | None = None,
+    judge: JudgeFn | None = None,
 ) -> list[ItemOutcome]:
     """逐题跑链。任一题链路异常**直接上抛**（R7：半个 run 的漂亮表格
     比报错更危险——你会拿着它宣称"进步了"）。调用方负责把 run 标 failed。
 
-    chain 可注入（测试喂假链路，不依赖 Ollama）；None 时用真实 run_chain。
+    chain / judge 可注入（测试喂假链路、假裁判，不依赖 Ollama）；
+    None 时 chain 用真实 run_chain，judge=None 表示本跑不评第 2 层
+    （仅测试与调试场景；main 入口只要题集里有该裁判的题就强制配置裁判）。
     """
     chain = chain or run_chain
     outcomes: list[ItemOutcome] = []
@@ -325,12 +408,19 @@ def run_all_items(
                 scope_keys=perm.scope_keys,
                 kb_ids=[kb_id],
             )
-            outcome = _score_chain_item(item, result, hits)
+            judge_outcome: JudgeOutcome | None = None
+            if (
+                judge is not None
+                and item.category in ("normal", "edge")
+                and item.judge == "model"
+            ):
+                judge_outcome = judge(item, result, hits)
+            outcome = _score_chain_item(item, result, hits, judge_outcome)
         outcomes.append(outcome)
         print(
             f"  [{i:2d}/{len(items)}] {item.item_id} {item.category:<10s} "
-            f"{outcome.verdict}  refused={outcome.refused} "
-            f"retrieval_hit={outcome.retrieval_hit}",
+            f"status={outcome.status} verdict={outcome.verdict} "
+            f"refused={outcome.refused} retrieval_hit={outcome.retrieval_hit}",
             file=sys.stderr,
         )
     return outcomes
@@ -373,6 +463,7 @@ def config_snapshot(kb_id: int) -> dict:
         "llm_model": os.getenv("LLM_MODEL", ""),
         "rerank": False,  # V0.1 故意不做（对比基线留 V1）
         "hybrid": False,  # V0.1 故意不做（纯向量）
+        "judge_model": os.getenv("JUDGE_MODEL", ""),  # T29 裁判模型（与被测模型不同档）
         "eval_kb_id": kb_id,
         "dataset": f"{DATASET_NAME}@{DATASET_VERSION}",
         "identity_map": IDENTITY_MAP,
@@ -401,7 +492,7 @@ def _status(key: str, value: float | None) -> str:
 
 def print_table(metrics: dict) -> None:
     """stdout 指标表（evals/README.md 第四节样式；Markdown 表格便于粘贴）。"""
-    l1, l3 = metrics["layer1"], metrics["layer3"]
+    l1, l2, l3 = metrics["layer1"], metrics["layer2"], metrics["layer3"]
     p95_s = metrics["latency_eval"]["p95_ms"] / 1000
 
     def _row(key: str, name: str, target: str, value: float | None) -> tuple:
@@ -411,9 +502,9 @@ def print_table(metrics: dict) -> None:
         _row("recall_at_5", "Recall@5", "≥ 0.85", l1["recall_at_5"]),
         _row("mrr", "MRR", "≥ 0.70", l1["mrr"]),
         _row("context_precision", "上下文精确度", "≥ 0.70", l1["context_precision"]),
-        ("忠实度", "≥ 0.85", "—（T29）", "—"),
-        ("答案相关性", "≥ 0.80", "—（T29）", "—"),
-        ("引用准确率", "≥ 0.90", "—（T29）", "—"),
+        _row("faithfulness", "忠实度", "≥ 0.85", l2["faithfulness"]),
+        _row("answer_relevance", "答案相关性", "≥ 0.80", l2["answer_relevance"]),
+        _row("citation_accuracy", "引用准确率", "≥ 0.90", l2["citation_accuracy"]),
         _row("task_completion", "任务完成率", "≥ 0.90", l3["task_completion"]),
         _row("refusal_accuracy", "拒答正确率", "≥ 0.90", l3["refusal_accuracy"]),
         _row(
@@ -447,11 +538,17 @@ def write_reports(
         "git_commit": commit,
         "dataset": f"{DATASET_NAME}@{DATASET_VERSION}",
         "metrics": metrics,
+        # judge: human 的题裁判跳过，必须显式列出等人工评分（judge-prompt.md
+        # 第四节）——不列出来，"还有几题没人评"就是不可见的
+        "pending_human_judge": [
+            o.item.item_id for o in outcomes if o.item.judge == "human"
+        ],
         "items": [
             {
                 "item_id": o.item.item_id,
                 "category": o.item.category,
                 "question": o.item.question,
+                "status": o.status,
                 "verdict": o.verdict,
                 "refused": o.refused,
                 "retrieval_hit": o.retrieval_hit,
@@ -467,7 +564,7 @@ def write_reports(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    failures = [o for o in outcomes if o.verdict == "fail"]
+    failures = [o for o in outcomes if o.status == "fail"]
     failures_path: Path | None = None
     if failures:
         FAILURES_DIR.mkdir(parents=True, exist_ok=True)
@@ -484,7 +581,7 @@ def write_reports(
                 f"## {o.item.item_id}（{o.item.category}）{o.item.question}",
                 "",
                 f"- 应拒答：{o.item.should_refuse}　实际拒答：{o.refused}　"
-                f"检索命中：{o.retrieval_hit}",
+                f"检索命中：{o.retrieval_hit}　裁判判定：{o.verdict or '—'}",
                 f"- 实际输出：{answer}",
                 f"- 备注：{o.notes or '—'}",
                 "",
@@ -522,6 +619,29 @@ def main() -> int:
     commit = git_commit_for_run(allow_dirty=args.allow_dirty)
     items = load_golden_set(GOLDEN_SET_PATH, version=args.version)
 
+    # T29 裁判装配：题集里有该裁判的题时，裁判模型必须在跑前就位
+    # （JUDGE_MODEL 未配置在此显式失败，R7——不许跑完 17 题才发现裁判没配）
+    judge_fn: JudgeFn | None = None
+    if any(
+        i.category in ("normal", "edge") and i.judge == "model"
+        and i.item_id != OVERSIZE_ITEM_ID
+        for i in items
+    ):
+        judge_model = judge_model_from_env()
+        judge_tpl = load_judge_template()
+
+        def judge_fn(  # type: ignore[no-redef]
+            item: GoldenItem, result: QaResult, hits: list[ChunkHit]
+        ) -> JudgeOutcome:
+            return judge_answer(
+                question=item.question,
+                expected_answer=item.expected_answer,
+                hits=hits,
+                actual_answer=result.answer or "",
+                model=judge_model,
+                template=judge_tpl,
+            )
+
     engine = create_engine(os.environ["DATABASE_URL"])
     wall_start = time.perf_counter()
     with Session(engine) as session:
@@ -539,7 +659,9 @@ def main() -> int:
             file=sys.stderr,
         )
         try:
-            outcomes = run_all_items(session, items, kb_id=args.kb_id)
+            outcomes = run_all_items(
+                session, items, kb_id=args.kb_id, judge=judge_fn
+            )
         except Exception as exc:
             # R7：显式失败——run 落 failed + 原因，不上交一份"半成品的漂亮表格"
             eval_repo.finish_run(
@@ -568,6 +690,12 @@ def main() -> int:
         )
 
     print_table(metrics)
+    pending = [o.item.item_id for o in outcomes if o.item.judge == "human"]
+    if pending:
+        print(
+            f"\n待人工评分（judge: human，共 {len(pending)} 题）："
+            f"{', '.join(pending)}"
+        )
     print(f"\n报告：{report_path.relative_to(PROJECT_ROOT)}")
     if failures_path:
         print(f"失败案例：{failures_path.relative_to(PROJECT_ROOT)}")
