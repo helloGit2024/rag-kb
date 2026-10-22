@@ -27,7 +27,9 @@ DATASET_NAME = "golden-v1-30"
 # 1.0.0 → 1.0.1（2026-10-21，T29）：Q008/Q011/Q027/Q030 增加 judge: human 字段
 # （judge-prompt.md 第四节既定机制），题目与标准答案未动。内容变了 checksum
 # 必变，按 R14 升版本重新注册，不偷改旧版。
-DATASET_VERSION = "1.0.1"
+# 1.0.1 → 1.0.2（2026-10-22，T30）：新增 Q101（部分可见权限题，permission 3→4，
+# 共 31 条）。题干与标准答案已经人工确认（golden_set.yaml 头部铁律）。
+DATASET_VERSION = "1.0.2"
 REPO_PATH = "evals/golden_set.yaml"
 
 # golden_set 的 scope_keys 字段 → 评估专用账号（scripts/seed_users.py 已灌库）。
