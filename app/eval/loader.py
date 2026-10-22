@@ -29,7 +29,11 @@ DATASET_NAME = "golden-v1-30"
 # 必变，按 R14 升版本重新注册，不偷改旧版。
 # 1.0.1 → 1.0.2（2026-10-22，T30）：新增 Q101（部分可见权限题，permission 3→4，
 # 共 31 条）。题干与标准答案已经人工确认（golden_set.yaml 头部铁律）。
-DATASET_VERSION = "1.0.2"
+# 1.0.2 → 1.0.3（2026-10-22）：Q029 金标裁决——原标准"拒答+澄清提示"与 R5
+# 固定句式排他性冲突（结构上不可能 pass），经项目所有者裁决收敛为"R5 固定
+# 句式拒答即通过"，should_refuse false→true（歧义题本就应拒，纳入拒答统计）。
+# 标尺让路宪法，非为通过而改题（R13 理由随 eval: commit 记录）。
+DATASET_VERSION = "1.0.3"
 REPO_PATH = "evals/golden_set.yaml"
 
 # golden_set 的 scope_keys 字段 → 评估专用账号（scripts/seed_users.py 已灌库）。
