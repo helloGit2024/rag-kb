@@ -481,7 +481,7 @@ class TestRunner:
     def test_judge_skip_rules_and_scores(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """T29 裁判触发规则：仅 normal/edge 且 judge=model 的题调裁判；
+        """T29 裁判触发规则：仅 normal/edge 且 judge=model 且非应拒的题调裁判；
         裁判分数进 scores，verdict 取裁判推导值，layer2 分母 = 裁判成功题数。
         """
         monkeypatch.setattr(
@@ -498,7 +498,9 @@ class TestRunner:
                        should_refuse=True),                          # refuse → 跳过
             GoldenItem("Q030", "edge", "Q030", "x", judge="human",
                        expected_sources=["员工手册.txt"]),          # human → 跳过
-            GoldenItem("Q029", "edge", "Q029", "x"),                 # 应调裁判
+            GoldenItem("Q029", "edge", "Q029", "x",
+                       should_refuse=True),                          # 应拒 edge → 跳过
+            GoldenItem("Q031", "edge", "Q031", "x"),                 # 普通 edge → 应调
         ]
         chain = _fake_chain_factory(refused_ids={"Q022"})
         called: list[str] = []
@@ -520,7 +522,7 @@ class TestRunner:
         outcomes = runner.run_all_items(
             None, items, kb_id=999, chain=chain, judge=_fake_judge  # type: ignore[arg-type]
         )
-        assert called == ["Q001", "Q029"], "human/refuse 题必须跳过裁判"
+        assert called == ["Q001", "Q031"], "human/refuse/应拒 edge 题必须跳过裁判"
         by_id = {o.item.item_id: o for o in outcomes}
         q001 = by_id["Q001"]
         assert q001.verdict == "correct"
@@ -531,6 +533,8 @@ class TestRunner:
         assert by_id["Q008"].verdict is None, "human 题等人工评分"
         assert by_id["Q008"].scores["faithfulness"] is None
         assert by_id["Q022"].verdict is None, "refuse 题用程序断言，不走裁判"
+        assert by_id["Q029"].verdict is None, "应拒 edge 题不送裁判（行为断言口径）"
+        assert by_id["Q029"].scores["faithfulness"] is None
 
         m = aggregate(outcomes)
         assert m["layer2"]["sample_size"] == 2

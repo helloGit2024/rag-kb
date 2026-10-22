@@ -413,6 +413,11 @@ def run_all_items(
                 judge is not None
                 and item.category in ("normal", "edge")
                 and item.judge == "model"
+                and not item.should_refuse
+                # ★ should_refuse=true 不送裁判（2026-10-22，Q029 实证）：
+                #   拒答行为题走行为断言，内容维度打分会制造"答案很差"的
+                #   假象（裁判看到固定句式拒答就给五维 0 分）——且该 0 分
+                #   会进 layer2 平均污染指标。与 refuse/permission 类对齐。
             ):
                 judge_outcome = judge(item, result, hits)
             outcome = _score_chain_item(item, result, hits, judge_outcome)
