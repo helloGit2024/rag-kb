@@ -10,6 +10,9 @@
   例外：register_dataset / create_run 自带 commit，因为
   T28 跑评估前要先拿到 dataset_id / run_id 再开始长任务，
   中途崩溃时已拿到的 id 必须真实存在（R7 显式失败可定位）。
+  例外 2：cleanup_hanging_runs / update_attribution_candidate 自带
+  commit——它们是运维型回填（运维护栏 / 归因候选），独立事务，
+  不挂在任何评估 run 的事务上。
 
 ★ 两处"故意不拦、靠 DB 约束兜底"：
   - activate_dataset 不预检 unconfirmed_count：
@@ -229,4 +232,40 @@ def set_baseline(session: Session, run_id: int) -> None:
     部分唯一索引抛出 IntegrityError（显式失败，R7）。"""
     run = get_run(session, run_id)
     run.is_baseline = True
+    session.commit()
+
+
+def list_run_items(
+    session: Session, run_id: int, *, status: str | None = None
+) -> list[EvalRunItem]:
+    """取一个 run 的逐条结果（可按 status 过滤），按 item_id 排序。不 commit。"""
+    stmt = select(EvalRunItem).where(EvalRunItem.run_id == run_id)
+    if status is not None:
+        stmt = stmt.where(EvalRunItem.status == status)
+    return list(session.execute(stmt.order_by(EvalRunItem.item_id)).scalars())
+
+
+def update_attribution_candidate(
+    session: Session,
+    run_id: int,
+    item_id: str,
+    *,
+    retrieval_hit: bool | None,
+    candidate: str,
+) -> None:
+    """回填 retrieval_hit 与 attribution_candidate，**自带 commit**
+    （运维型回填，独立事务，见文件头"例外 2"）。
+
+    ★ R15 边界：本函数**绝不写 attribution_confirmed / confirmed_by /
+      confirmed_at**——结论只能人工写入；ck_attribution 约束要求结论
+      与 candidate + confirmed_by 并存，机器只补 candidate 这一半。
+    """
+    session.execute(
+        update(EvalRunItem)
+        .where(
+            EvalRunItem.run_id == run_id,
+            EvalRunItem.item_id == item_id,
+        )
+        .values(retrieval_hit=retrieval_hit, attribution_candidate=candidate)
+    )
     session.commit()

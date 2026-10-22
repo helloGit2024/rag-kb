@@ -263,7 +263,7 @@ $ make eval
 | 归因确认率 | 4 / 4（run 87 全部 fail 条目已确认：generation ×3、undetermined ×1，R15） |
 | 来自线上真实失败的题 | 0 条（**下一步优先补** —— 走 promote 通道，见第八节） |
 | 裁判与人工判断偏差 | 尚无（裁判模型随 T29 引入） |
-| 下一步 | T31 基线与 `make eval-compare`；~~run 87 归因确认~~（**4/4 完成**：Q008/Q030/Q027=generation，Q029=undetermined 规格冲突待裁决）；Q029 待裁决项：改金标 or V1 实现追问澄清；不达标项进 V1 改进清单；**`make eval-attribute` 工具未实现**（AGENTS.md/attribution.md 已写但 Makefile/app/eval 无对应物），候选规则对 hit=null 的应拒题全落 unclassified（覆盖率缺口已记录） |
+| 下一步 | T31 基线与 `make eval-compare`；~~`make eval-attribute` 工具~~（**已实现**：`app/eval/attribution.py`，候选判定表与 attribution.md 第三节一一对应，含 hit=null 应拒题的 generation_suspect 补位规则；run 87 实测 R14 checksum 门禁正确拒绝）；不达标项进 V1 改进清单 |
 
 > **"归因确认率"这一栏要盯着**：它掉下来，说明你在攒未确认的候选。
 > 未确认的候选不会进入任何统计，攒着等于白跑 —— 见 `evals/attribution.md` 第四节。

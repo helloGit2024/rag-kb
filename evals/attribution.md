@@ -63,11 +63,15 @@
 
 | 条件 | 候选值 | 说明 |
 |------|-------|------|
-| `refused=true` 且 `retrieval_hit=true` | `generation_suspect` | 资料在手却没答 → 疑似拒答阈值太严 |
+| `status=error` | `unclassified` | **先看工程错误，不参与质量归因** |
+| `should_refuse=true` 且 `refused=false` | `generation_suspect` | 该拒未拒（拒答判定在生成侧）。**2026-10-22 补**：覆盖 hit=null 的应拒题——它们没有 expected_sources，hit 算不出来，按旧表会全掉进 unclassified（run 87 的 Q027 实证） |
+| `refused=true` 且 `retrieval_hit=true` | `generation_suspect` | 资料在手却没答 → 疑似拒答阈值太严 / 引用绑定错位 |
 | `refused=false` 且 `retrieval_hit=false` 且 `faithfulness < 0.85` | `retrieval_suspect` | 没找到资料却硬答 → 疑似召回失败叠加幻觉 |
 | `refused=false` 且 `retrieval_hit=true` 且（`off_topic` 或 `wrong_number`） | `generation_suspect` | 资料在手却答偏/答错数字 |
-| `status=error` | `unclassified` | **先看工程错误，不参与质量归因** |
 | 其余 | `unclassified` | 允许大量存在，见下方说明 |
+
+> 上表与代码 `app/eval/attribution.py::attribution_candidate()` 一一对应，
+> 规则顺序即优先级（命中即返回）。改表必须同步改代码与测试，反之亦然。
 
 > **允许 `unclassified` 大量存在，是这份设计里最反直觉、也最重要的一条。**
 > 强行给每条都贴一个原因，只会让你分不清哪些是真判断、哪些是兜底填充。

@@ -61,11 +61,17 @@ scan:  ## 扫描误提交的密钥（上线前必须跑）
 # ── 评估 ────────────────────────────────────────────────
 PYTHON    ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 
-eval:  ## 跑评估集（V0.1 30 题三层指标，结果写 eval_runs / eval_run_items）
+eval:  ## 跑评估集（V0.1 31 题三层指标，结果写 eval_runs / eval_run_items）
 	@set -a; . ./.env; set +a; \
 	DATABASE_URL=$$(printf '%s' "$$DATABASE_URL" | sed 's/@postgres:/@localhost:/'); \
 	export DATABASE_URL; \
 	PYTHONPATH=. $(PYTHON) -m app.eval.runner $(ARGS)
+
+eval-attribute:  ## 归因候选回填（只跑检索，不调生成；绝不写结论，R15。用法：make eval-attribute ARGS="--run-id 87"）
+	@set -a; . ./.env; set +a; \
+	DATABASE_URL=$$(printf '%s' "$$DATABASE_URL" | sed 's/@postgres:/@localhost:/'); \
+	export DATABASE_URL; \
+	PYTHONPATH=. $(PYTHON) -m app.eval.attribution $(ARGS)
 
 # ── 清理 ────────────────────────────────────────────────
 clean:  ## 清理构建产物与临时文件（不动数据卷）
