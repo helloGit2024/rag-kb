@@ -608,6 +608,13 @@ class TestJudgeParse:
         s = parse_judge_json(noisy)
         assert s.faithfulness == 1.0
 
+    def test_ignores_trailing_commentary_after_json(self) -> None:
+        """JSON 结束后再补一段解释时，只取第一个完整对象（v3 的【引用核对】易触发）。"""
+        noisy = f"{_VALID_JUDGE_JSON}\n备注：以上评分基于输入三原文核对。"
+        s = parse_judge_json(noisy)
+        assert s.faithfulness == 1.0
+        assert s.citation_accuracy == 1.0
+
     def test_rejects_missing_field(self) -> None:
         with pytest.raises(ValueError, match="citation_accuracy"):
             parse_judge_json(

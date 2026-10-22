@@ -1,7 +1,7 @@
 """裁判模型评分（V0.1 · T29）：第 2 层指标（忠实度/相关性/引用准确率）的来源。
 
 职责与纪律：
-  · 提示词本体在 app/prompts/judge_v1.md（R4），本模块只做占位符替换与解析；
+  · 提示词本体在 app/prompts/judge_v3.md（R4），本模块只做占位符替换与解析；
   · 裁判调用一律经 app/core/llm_gateway.chat()（R11），模型名由调用方传入
     （runner 从环境变量 JUDGE_MODEL 读取，不写死）；
   · retrieved_context 的编号格式必须与 generator._build_context **完全一致**
@@ -29,7 +29,7 @@ from app.core.llm_gateway import GatewayError, chat
 from app.repos.chunk_repo import ChunkHit
 from app.services.pii import redact_pii
 
-PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "judge_v2.md"
+PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "judge_v3.md"
 
 # 解析失败时最多再补问 1 次（模型偶尔会絮叨输出 JSON 以外的内容）
 _MAX_ATTEMPTS = 2
@@ -113,23 +113,23 @@ def render_prompt(
 
 # ── 解析（纯函数，测试直接喂已知输入）─────────────────────────────────────────
 
-_JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
+_JSON_DECODER = json.JSONDecoder()
 
 
 def parse_judge_json(content: str) -> JudgeScores:
     """把裁判输出解析成 JudgeScores；任何不合法都抛 ValueError（调用方重试）。
 
-    容忍 ```json 围栏与前后絮叨（提取第一个 { 到最后一个 }），但字段缺失、
-    分数越界、critical_issue 非法一律视为解析失败。
+    容忍 ```json 围栏与前后絮叨：从第一个 `{` 开始用 raw_decode 解析，
+    只取第一个完整 JSON 对象，忽略其后的补充说明。v3 要求裁判在 reasoning
+    里写【引用核对】，模型偶尔会在 JSON 结束后再补一段解释——旧的
+    `{.*}` 贪婪提取会把尾随文字一起喂给 json.loads，报 "Extra data"。
     """
     text = content.strip()
-    if not text.startswith("{"):
-        m = _JSON_BLOCK_RE.search(text)
-        if not m:
-            raise ValueError(f"裁判输出不含 JSON 对象：{text[:120]!r}")
-        text = m.group(0)
+    start = text.find("{")
+    if start == -1:
+        raise ValueError(f"裁判输出不含 JSON 对象：{text[:120]!r}")
     try:
-        data = json.loads(text)
+        data, _ = _JSON_DECODER.raw_decode(text[start:])
     except json.JSONDecodeError as exc:
         raise ValueError(f"裁判输出不是合法 JSON：{exc}") from exc
     if not isinstance(data, dict):
@@ -224,6 +224,9 @@ def judge_answer(
                 model=model,
                 temperature=0,  # 裁判必须确定：同一答案两次评分应一致
                 max_tokens=1024,
+                # v3 要求输出【引用核对】，8k 上下文下 14b 单次约 100s；
+                # 全局默认 120s 在冷启动/长题上会误触超时（Q015 实测）。
+                timeout_s=180,
                 transport=transport,
             )
         except GatewayError as exc:
