@@ -36,15 +36,23 @@ class ConfigDiffError(ValueError):
     """两次 run 的 config_snapshot 有硬差异，禁止直接对比（eval.md 二节）。"""
 
 
+class DatasetChecksumError(ValueError):
+    """两次 run 用的数据集 checksum 不同——题目/标准答案已变，不可归因。
+
+    触发条件：eval_datasets.checksum 不匹配（README 92 行 + R14）。
+    """
+
+
 class ItemMismatchError(ValueError):
     """两次 run 的 item_id 集合不一致——题目集合不同，无法逐题 diff。"""
 
 
 # ── 硬差异白名单（一变就拒绝对比） ───────────────────────────────────────────
 # 这些 key 直接决定检索/分块/生成的行为，一变指标就不可归因。
-# 明确排除：
+# 明确排除（只告警不拒绝）：
 #   - judge_model（裁判层，不属于 RAG 主链路；run 97→149 变了 14b→14b-8k）
-#   - dataset（版本号字符串；真正的题目集合一致性靠 item_id 集合校验）
+#   - dataset（版本号字符串；真正的数据集一致性靠 eval_datasets.checksum
+#     前置硬校验——checksum 不同直接抛 DatasetChecksumError，不走这里）
 HARD_CONFIG_KEYS: frozenset[str] = frozenset(
     {
         "prompt_version",
@@ -225,13 +233,30 @@ def compare_runs(
     """拉 DB 对比两次 run。
 
     Raises:
-        ConfigDiffError: config_snapshot 有硬差异。
+        DatasetChecksumError: eval_datasets.checksum 不同（数据集内容变了，不可归因）。
+        ConfigDiffError: config_snapshot 有硬差异（prompt/检索/分块/生成 主链路变了）。
         ItemMismatchError: item_id 集合不一致。
         RunNotFoundError: run_id 不存在（eval_repo 显式失败）。
     """
     with Session(engine) as session:
         b_run, b_items = eval_repo.get_run_with_items(session, baseline_run_id)
         t_run, t_items = eval_repo.get_run_with_items(session, target_run_id)
+
+        # ★ 0. eval_datasets.checksum 前置硬校验（README 92 行 + R14）
+        #     这是比 config_snapshot 更深层的保障——checksum 不同意味着
+        #     golden_set.yaml 内容变了（题目/标准答案/类别），
+        #     两次 run 指标差异不可归因，直接拒绝。
+        b_ck = eval_repo.get_dataset_checksum(session, b_run.dataset_id)
+        t_ck = eval_repo.get_dataset_checksum(session, t_run.dataset_id)
+        if b_ck is None or t_ck is None:
+            raise DatasetChecksumError(
+                "至少一条 run 的 dataset 未注册 checksum（eval_datasets 表缺失）"
+            )
+        if b_ck != t_ck:
+            raise DatasetChecksumError(
+                f"数据集 checksum 不同——baseline={b_ck[:12]}... "
+                f"target={t_ck[:12]}...：题目/标准答案已变，不可归因（README 92 行）。"
+            )
 
     # ① config_snapshot 对比
     hard, soft = detect_config_diffs(

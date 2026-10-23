@@ -214,6 +214,18 @@ def find_baseline(
     return session.execute(stmt.limit(1)).scalar_one_or_none()
 
 
+def get_dataset_checksum(session: Session, dataset_id: int) -> str | None:
+    """取一个 eval_datasets 行的 checksum。不存在则返回 None。
+
+    T31 compare 工具的前置硬校验——checksum 不同意味着 golden_set.yaml
+    内容变了（题目/标准答案/类别），两次 run 指标不可归因（R14 + README 92 行）。
+    """
+    row = session.execute(
+        select(EvalDataset.checksum).where(EvalDataset.id == dataset_id)
+    ).scalar_one_or_none()
+    return row
+
+
 def insert_run_items(session: Session, run_id: int, items: list[EvalRunItem]) -> None:
     """批量插入逐条结果。不 commit（由调用方统一控制事务）。
 
