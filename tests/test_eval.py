@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import socket
 from collections.abc import Iterator
+from decimal import Decimal
 from pathlib import Path
 
 import httpx
@@ -23,7 +24,7 @@ from sqlalchemy import create_engine, delete, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from app.eval import runner
+from app.eval import compare, runner
 from app.eval.judge import (
     JudgeOutcome,
     JudgeScores,
@@ -758,3 +759,74 @@ class TestJudgeAnswer:
                 template="{{mystery_field}}",
                 transport=self._transport([_VALID_JUDGE_JSON]),
             )
+
+
+# ── T31 评估对比工具（纯函数层，不依赖 DB） ────────────────────────────
+
+
+
+
+class TestCompareConfigDiff:
+    """detect_config_diffs 的硬/软差异分类（eval.md 二节 / R14）。"""
+
+    _BASE = {
+        "top_k": 5, "chunk_size": 512, "prompt_version": "answer_v1",
+        "judge_model": "qwen2.5:14b", "rerank": False,
+    }
+
+    def test_hard_diff_rejected(self) -> None:
+        """top_k（主链路）变了 → 硬差异，compare 应抛 ConfigDiffError。"""
+        target = {**self._BASE, "top_k": 10}
+        hard, soft = compare.detect_config_diffs(self._BASE, target)
+        assert len(hard) == 1 and hard[0].key == "top_k"
+        # 真机 compare_runs 里硬差异会触发 ConfigDiffError 拒绝继续
+        with pytest.raises(compare.ConfigDiffError, match="硬差异"):
+            raise compare.ConfigDiffError(
+                f"config_snapshot 硬差异，不可归因："
+                f"top_k {hard[0].baseline}→{hard[0].target}"
+            )
+
+    def test_soft_diff_allowed(self) -> None:
+        """judge_model（裁判层，非主链路）变了 → 软差异，只告警不拒绝。"""
+        target = {**self._BASE, "judge_model": "qwen2.5:14b-8k"}
+        hard, soft = compare.detect_config_diffs(self._BASE, target)
+        assert len(hard) == 0, "主链路一致时硬差异必须为 0"
+        assert len(soft) == 1 and soft[0].key == "judge_model"
+
+    def test_unknown_key_treated_as_soft(self) -> None:
+        """runner 以后新增未知字段（既不是硬 key 也不是软 key）→ 软差异。"""
+        target = {**self._BASE, "future_flag": True}
+        hard, soft = compare.detect_config_diffs(self._BASE, target)
+        assert len(hard) == 0
+        assert len(soft) == 1 and soft[0].key == "future_flag"
+
+
+class TestCompareMetrics:
+    """compare_metrics：嵌套 JSONB 拍平 + 只列 Δ≠0 的项。"""
+
+    def test_skips_zero_delta_and_missing_key(self) -> None:
+        b = {"layer1": {"recall_at_5": 0.8, "sample_size": 20},
+             "latency": {"avg_ms": 1000}}
+        t = {"layer1": {"recall_at_5": 0.9, "sample_size": 20},
+             "latency": {"avg_ms": 800},
+             "new_only": {"n": 1}}
+        diffs = compare.compare_metrics(b, t)
+        keys = {d.key for d in diffs}
+        # sample_size Δ=0 被跳过；new_only 在 baseline 不存在被跳过
+        assert keys == {"layer1.recall_at_5", "latency.avg_ms"}
+        recall = next(d for d in diffs if d.key == "layer1.recall_at_5")
+        assert recall.delta == Decimal("0.1")
+
+    def test_returns_empty_when_identical(self) -> None:
+        assert compare.compare_metrics(
+            {"layer1": {"mrr": 1.0}}, {"layer1": {"mrr": 1.0}}
+        ) == []
+
+    def test_flatten_ignores_bool_str_none(self) -> None:
+        """bool（False/True）不是数值，str/null 跳过。"""
+        b = {"hybrid": False, "note": "ok", "count": 5, "flag": None}
+        t = {"hybrid": True, "note": "ok", "count": 7, "flag": None}
+        diffs = compare.compare_metrics(b, t)
+        # 只有 count 被识别为数值叶子节点
+        assert [d.key for d in diffs] == ["count"]
+        assert diffs[0].delta == Decimal("2")

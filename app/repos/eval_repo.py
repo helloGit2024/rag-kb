@@ -188,6 +188,32 @@ def get_run(session: Session, run_id: int) -> EvalRun:
     return run
 
 
+def get_run_with_items(
+    session: Session, run_id: int
+) -> tuple[EvalRun, list[EvalRunItem]]:
+    """取一个 run 及其全部 item（按 item_id 排序）。不 commit。
+
+    T31 compare 工具的便捷入口——一次调用省掉调用方先 get_run 再 list_run_items 两段。
+    """
+    run = get_run(session, run_id)
+    items = list_run_items(session, run_id)
+    return run, items
+
+
+def find_baseline(
+    session: Session, dataset_id: int | None = None
+) -> EvalRun | None:
+    """取基线 run（`is_baseline=true`）。dataset_id 传了就只在该数据集里找。
+
+    同一数据集只允许一个基线（uq_run_baseline 部分唯一索引兜底）。
+    返回 None = 该数据集（或全局）尚未设基线。
+    """
+    stmt = select(EvalRun).where(EvalRun.is_baseline.is_(True))
+    if dataset_id is not None:
+        stmt = stmt.where(EvalRun.dataset_id == dataset_id)
+    return session.execute(stmt.limit(1)).scalar_one_or_none()
+
+
 def insert_run_items(session: Session, run_id: int, items: list[EvalRunItem]) -> None:
     """批量插入逐条结果。不 commit（由调用方统一控制事务）。
 

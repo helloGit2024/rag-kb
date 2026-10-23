@@ -67,6 +67,14 @@ eval:  ## 跑评估集（V0.1 31 题三层指标，结果写 eval_runs / eval_ru
 	export DATABASE_URL; \
 	PYTHONPATH=. $(PYTHON) -m app.eval.runner $(ARGS)
 
+eval-compare:  ## T31 对比两次 run。用法：make eval-compare BASELINE=97 TARGET=149 或 make eval-compare AUTO=1
+	@set -a; . ./.env; set +a; \
+	DATABASE_URL=$$(printf '%s' "$$DATABASE_URL" | sed 's/@postgres:/@localhost:/'); \
+	export DATABASE_URL; \
+	$(if $(AUTO), \
+		PYTHONPATH=. $(PYTHON) -m app.eval.compare --auto, \
+		PYTHONPATH=. $(PYTHON) -m app.eval.compare --baseline $(BASELINE) --target $(TARGET))
+
 eval-attribute:  ## 归因候选回填（只跑检索，不调生成；绝不写结论，R15。用法：make eval-attribute ARGS="--run-id 87"）
 	@set -a; . ./.env; set +a; \
 	DATABASE_URL=$$(printf '%s' "$$DATABASE_URL" | sed 's/@postgres:/@localhost:/'); \
