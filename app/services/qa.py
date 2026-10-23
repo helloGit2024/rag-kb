@@ -25,6 +25,7 @@ from app.core.cache import (
     set_answer,
 )
 from app.core.embedding import embed_texts
+from app.repos import query_log_repo
 from app.repos.chunk_repo import ChunkHit, search_chunks
 from app.services.generator import Citation, generate_answer
 from app.services.permission import scope_fingerprint
@@ -49,6 +50,8 @@ class QaResult:
     completion_tokens: int = 0
     model_used: str | None = None
     cost_cny: float | None = None
+    # T34：本次问答在 query_logs 里的行 id；未落库（无身份/落库失败）为 None
+    query_log_id: int | None = None
 
 
 def run_chain(
@@ -95,6 +98,7 @@ def answer_question(
     top_k: int = 5,
     scope_keys: list[str] | None = None,
     kb_ids: list[int] | None = None,
+    user_id: int | None = None,
 ) -> QaResult:
     """把问题跑完整条链路，外面套一层**权限隔离**缓存（T16 + T17b）。
 
@@ -104,6 +108,8 @@ def answer_question(
         scope_keys: 用户可见范围（非 kb 维度）。
             ★ 必须显式传入，权限过滤在 SQL 内完成（R2）。
         kb_ids: 用户可见知识库 ID 列表（T17b）。非空时检索 SQL 追加 kb 轴条件。
+        user_id: 当前用户主键（T34）。非 None 时本次问答会写一行 query_logs；
+            脚本/测试不传则只打 stderr JSON（日志落表只对线上带身份的请求生效）。
 
     Returns:
         QaResult。命中缓存时直接回放上次结果——此时 `retrieve_ms` / `generate_ms`
@@ -145,6 +151,8 @@ def answer_question(
             result,
             cached["retrieved_chunk_ids"],
             cache_status=cache_status,
+            user_id=user_id,
+            kb_ids=kb_ids,
         )
         return result
 
@@ -162,6 +170,8 @@ def answer_question(
         retrieved_chunk_ids,
         cache_status=cache_status,
         cache_write_ok=write_ok,
+        user_id=user_id,
+        kb_ids=kb_ids,
     )
 
     return result
@@ -234,19 +244,18 @@ def _log_qa(
     *,
     cache_status: str,
     cache_write_ok: bool = True,
+    user_id: int | None = None,
+    kb_ids: list[int] | None = None,
 ) -> None:
-    """落一行结构化问答记录。
+    """记一行结构化问答记录：stderr JSON + （带身份时）query_logs 落表。
 
-    rag-core「生成」规则要求每条问答都有结构化记录；V-1 还没有 query_logs 表
-    （T02 只建了 documents/chunks），因此先打印一行 JSON，落表留到 V0.1 T34（已入账）。
-    （T34 = query_logs 问答流水入库；T32 是埋点、T33 是评估入库，均不是落表。）
+    T34 起 `query_logs` 已建表：带 user_id 的线上请求额外写一行（旁路记录）。
+    **落表失败不影响问答返回**——日志不是业务结果，失败只显式打 stderr，
+    绝不把用户请求变成 500（与 R7 不冲突：错误仍然可见，只是不阻断服务）。
     只记 chunk_id 不记块文本——避免把全文文档内容写入日志（api-data 规则第五节）。
-    ★ 把**当时生效的可见范围**一并记入，字段名固定为 `scope_snapshot`（值 = 参数
-      scope_keys）：security.md 2.2 要求每次问答都能事后定位"当时他到底能看到什么"。
-      与 `query_logs.scope_snapshot`（T34 落表）共用同一个名字，落表时无需再做名字映射。
-      四个易混词的区分见 docs/glossary.md 第七节 —— scope_key（单个标签）/
-      scope_keys（内存里的值）/ scope_snapshot（落盘字段名）/
-      缓存指纹（hash，局部变量）。
+    ★ 把**当时生效的可见范围**一并记入：stderr 字段 `scope_snapshot`（值 = scope_keys，
+      沿用 V-1 的形状）；落表时写 {"scope_keys": [...], "kb_ids": [...]} 两轴都记
+      ——kb 维度不折进 scope_keys（security.md 2.2：事后定位"当时他到底能看到什么"）。
     ★ `cache` 字段 = `hit` / `miss` / `error`（取值见 app/core/cache.py，T16 的验收
       就是看它）：不同权限问同一问题必须是 `miss`。
       **`miss` 与 `error` 必须分开**——`miss` 是"读成功、确实没缓存"，`error` 是
@@ -275,3 +284,34 @@ def _log_qa(
         json.dumps(record, ensure_ascii=False),
         file=sys.stderr,
     )
+
+    # ② query_logs 落表（T34）：只对带身份的线上请求生效。
+    # 脚本/测试不传 user_id → 跳过（否则每次单测都会去连真实数据库）。
+    if user_id is None:
+        return
+    try:
+        result.query_log_id = query_log_repo.insert_log(
+            user_id=user_id,
+            # kb_id 只在"恰好一个知识库"时有意义；多库时完整列表进 scope_snapshot
+            kb_id=kb_ids[0] if kb_ids and len(kb_ids) == 1 else None,
+            question=question,
+            scope_snapshot={
+                "scope_keys": list(scope_keys),
+                "kb_ids": list(kb_ids or []),
+            },
+            retrieved_chunk_ids=retrieved_chunk_ids,
+            answer=result.answer,
+            refused=result.refused,
+            citations=[asdict(c) for c in result.citations],
+            latency_ms=result.latency_ms,
+            retrieve_ms=result.retrieve_ms,
+            generate_ms=result.generate_ms,
+            cost_cny=result.cost_cny,
+            model_used=result.model_used,
+        )
+    except Exception as exc:  # noqa: BLE001 — 旁路记录失败必须兜住，见 docstring
+        # R7：不静默——打 stderr 让人看得见；但不阻断问答返回
+        print(
+            f"⚠️ query_logs 落表失败（问答结果不受影响）：{exc!r}",
+            file=sys.stderr,
+        )

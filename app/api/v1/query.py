@@ -88,6 +88,8 @@ def query(
             top_k=req.top_k,
             scope_keys=perm.scope_keys,
             kb_ids=perm.kb_ids,
+            # T34：带身份才写 query_logs（日志落表只对线上请求生效）
+            user_id=perm.user_id,
         )
     except GatewayError as exc:
         # 生成模型不可用：503 + MODEL_UNAVAILABLE（R7 显式失败）。
@@ -135,4 +137,5 @@ def query(
         generate_ms=result.generate_ms,
         model_used=result.model_used,
         cost_cny=result.cost_cny,
+        query_log_id=result.query_log_id,
     )

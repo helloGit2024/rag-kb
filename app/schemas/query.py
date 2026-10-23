@@ -61,7 +61,8 @@ class QueryResult(BaseModel):
       - rerank_ms（nullable）：V0.1 故意不做重排（项目规则 ❌ 项）→ 始终 null
       - cost_cny（nullable）：本地 Ollama 时 null，云端模型上线后自动有值
       - trace_id（nullable）：V0.1 无链路追踪，留 null；V1 加真实 trace_id
-      - query_log_id（nullable）：V0.1 T34 未建 query_logs 表，留 null
+      - query_log_id（nullable）：T34 起为本次问答在 query_logs 的行 id；
+        落表失败或未带身份时为 null
     """
 
     # 契约字段名 model_used 恰好落在 pydantic 的 "model_" 保护前缀里，
@@ -79,4 +80,4 @@ class QueryResult(BaseModel):
     cost_cny: float | None = None  # 本地 Ollama 免费 → null
     model_used: str | None = None
     trace_id: str | None = None  # V0.1 无链路追踪 → null
-    query_log_id: int | None = None  # V0.1 T34 未建表 → null
+    query_log_id: int | None = None  # T34：落表成功时为行 id，否则 null

@@ -412,3 +412,41 @@ class EvalRunItem(Base):
     __table_args__ = (
         Index("uq_run_item", "run_id", "item_id", unique=True),
     )
+
+
+class QueryLog(Base):
+    """一次问答的落表记录（V0.1 · T34，data-model 2.9）。
+
+    ★ scope_snapshot 是排查越权问题的唯一手段：用户权限会变，
+      事后复现时只有它能回答"当时他到底能看到什么"。
+      值形如 {"scope_keys": [...], "kb_ids": [...]}，两轴都记
+      （kb 维度不折进 scope_keys，见 permission.py 模块说明）。
+    ★ kb_id 是"只检索了一个知识库"时的便捷列；多库查询时为 NULL，
+      完整列表看 scope_snapshot（data-model 只定义了单个 kb_id 列）。
+    ★ 落表失败不得让用户看到 500——它是旁路记录，不是业务结果；
+      失败由 qa._log_qa 显式打 stderr（R7：错得可见，但可继续服务）。
+    """
+
+    __tablename__ = "query_logs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    kb_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    scope_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    retrieved_chunk_ids: Mapped[Optional[List[int]]] = mapped_column(
+        ARRAY(BigInteger), nullable=True
+    )
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    refused: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    citations: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    retrieve_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    generate_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    rerank_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    cost_cny: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4), nullable=True)
+    model_used: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    trace_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
