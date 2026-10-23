@@ -61,6 +61,7 @@ class JudgeOutcome:
     # over_refusal/under_refusal；裁判失败或泄露类 critical_issue 时为 None
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cost_cny: float | None = None  # T33 裁判自身花费（与 tokens 同模式；None=无单价表）
     error: str = ""
 
 
@@ -216,6 +217,7 @@ def judge_answer(
     messages = [{"role": "user", "content": prompt}]
 
     total_in = total_out = 0
+    total_cost: float | None = None  # T33 任一调用为 None 则整体 None
     last_error = ""
     for _ in range(_MAX_ATTEMPTS):
         try:
@@ -234,6 +236,14 @@ def judge_answer(
             continue
         total_in += result.prompt_tokens
         total_out += result.completion_tokens
+        # T33 cost 累加：任一调用为 None（无单价表）则整体按 None 计，
+        # 避免把"没算"和"精确 0 元"混成 0.0
+        if result.cost_cny is None:
+            total_cost = None
+        elif total_cost is None:
+            total_cost = result.cost_cny
+        else:
+            total_cost += result.cost_cny
         try:
             scores = parse_judge_json(result.content)
         except ValueError as exc:
@@ -244,12 +254,14 @@ def judge_answer(
             verdict=derive_verdict(scores),
             prompt_tokens=total_in,
             completion_tokens=total_out,
+            cost_cny=round(total_cost, 6) if total_cost is not None else None,
         )
     return JudgeOutcome(
         scores=None,
         verdict=None,
         prompt_tokens=total_in,
         completion_tokens=total_out,
+        cost_cny=round(total_cost, 6) if total_cost is not None else None,
         error=f"裁判失败（{_MAX_ATTEMPTS} 次调用均未产出合法结果）：{last_error}",
     )
 

@@ -312,6 +312,70 @@ class TestMetrics:
         assert m["citation_accuracy"] == 0.5
         assert m["numeric_accuracy"] == 1.0, "null 不进 numeric 分母"
 
+    # ── T33 cost_eval 三态 ────────────────────────────────────────────
+
+    def test_cost_eval_all_none(self) -> None:
+        """全链路无成本记录（无价格表）→ total/avg 都是 None。"""
+        outcomes = [
+            ItemOutcome(
+                item=_item("Q001"), status="pass", scores=runner._zero_scores(),
+                cost_cny=None, refused=False,
+            ),
+            ItemOutcome(
+                item=_item("Q002"), status="pass", scores=runner._zero_scores(),
+                cost_cny=None, refused=True,
+            ),
+        ]
+        m = aggregate(outcomes)["cost_eval"]
+        assert m["total_cny"] is None
+        assert m["avg_cny"] is None
+        assert "无单价表" in m["note"]
+
+    def test_cost_eval_real_values(self) -> None:
+        """被测链 + 裁判都有成本 → 累加正确、avg 只算被测。"""
+        s1 = runner._zero_scores()
+        s1["judge_cost_cny"] = 0.012
+        s2 = runner._zero_scores()
+        # Q002 没跑裁判 → 无 judge_cost_cny
+
+        outcomes = [
+            ItemOutcome(
+                item=_item("Q001"), status="pass", scores=s1,
+                cost_cny=0.025, refused=False,
+            ),
+            ItemOutcome(
+                item=_item("Q002"), status="pass", scores=s2,
+                cost_cny=0.018, refused=True,
+            ),
+        ]
+        m = aggregate(outcomes)["cost_eval"]
+        # total_cny = 被测 0.025+0.018 + 裁判 0.012 = 0.055
+        assert m["total_cny"] == pytest.approx(0.055, abs=0.0001)
+        # avg_cny = 被测均值 = (0.025 + 0.018) / 2 = 0.0215
+        assert m["avg_cny"] == pytest.approx(0.0215, abs=0.0001)
+        assert "含被测链" in m["note"]
+
+    def test_cost_eval_mixed(self) -> None:
+        """部分题有成本、部分为 None → 只累加有值的，None 跳过。"""
+        s1 = runner._zero_scores()
+        s1["judge_cost_cny"] = 0.010
+
+        outcomes = [
+            ItemOutcome(
+                item=_item("Q001"), status="pass", scores=s1,
+                cost_cny=0.030, refused=False,
+            ),
+            ItemOutcome(
+                item=_item("Q002"), status="pass", scores=runner._zero_scores(),
+                cost_cny=None, refused=False,
+            ),
+        ]
+        m = aggregate(outcomes)["cost_eval"]
+        # total = 被测 0.030 + 裁判 0.010 = 0.040（Q002 的 None 跳过）
+        assert m["total_cny"] == pytest.approx(0.040, abs=0.0001)
+        # avg 分母只算有值的被测题 → 0.030 / 1 = 0.030
+        assert m["avg_cny"] == pytest.approx(0.030, abs=0.0001)
+
 
 # ── ensure_dataset：注册 / 复用 / checksum 门禁（真机 PG）────────────────────
 
@@ -759,6 +823,70 @@ class TestJudgeAnswer:
                 template="{{mystery_field}}",
                 transport=self._transport([_VALID_JUDGE_JSON]),
             )
+
+    # ── T33 cost_cny 累加 ────────────────────────────────────────────
+
+    def test_judge_cost_cny_accumulated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """两次调用（重试场景）的 cost_cny 累加正确。"""
+        from app.core.llm_gateway import ChatResult
+
+        calls: list[float | None] = []
+
+        def fake_chat(*args: object, **kwargs: object) -> ChatResult:
+            # 第一次返回无效 JSON + cost=0.005，第二次返回有效 JSON + cost=0.008
+            if len(calls) == 0:
+                calls.append(0.005)
+                return ChatResult(
+                    content="not json", model="judge-fake",
+                    prompt_tokens=50, completion_tokens=10, total_tokens=60,
+                    latency_ms=100, attempts=1, cost_cny=0.005,
+                )
+            calls.append(0.008)
+            return ChatResult(
+                content=_VALID_JUDGE_JSON, model="judge-fake",
+                prompt_tokens=50, completion_tokens=10, total_tokens=60,
+                latency_ms=100, attempts=1, cost_cny=0.008,
+            )
+
+        monkeypatch.setattr("app.eval.judge.chat", fake_chat)
+
+        out = judge_answer(
+            question="q", expected_answer="e", hits=self._hits(),
+            actual_answer="a", should_refuse=False, model="judge-fake",
+            template="t",
+            transport=httpx.MockTransport(
+                lambda r: httpx.Response(200, json={})
+            ),
+        )
+        # 两次 cost 累加：0.005 + 0.008 = 0.013
+        assert out.cost_cny == pytest.approx(0.013, abs=0.00001)
+        assert out.prompt_tokens == 100  # 两次 50 + 50
+        assert out.completion_tokens == 20
+
+    def test_judge_cost_cny_none_propagated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """任一调用 cost_cny=None → 整体按 None 计（语义：没算）。"""
+        from app.core.llm_gateway import ChatResult
+
+        def fake_chat(*args: object, **kwargs: object) -> ChatResult:
+            return ChatResult(
+                content=_VALID_JUDGE_JSON, model="judge-fake",
+                prompt_tokens=50, completion_tokens=10, total_tokens=60,
+                latency_ms=100, attempts=1, cost_cny=None,
+            )
+
+        monkeypatch.setattr("app.eval.judge.chat", fake_chat)
+
+        out = judge_answer(
+            question="q", expected_answer="e", hits=self._hits(),
+            actual_answer="a", should_refuse=False, model="judge-fake",
+            template="t",
+            transport=httpx.MockTransport(
+                lambda r: httpx.Response(200, json={})
+            ),
+        )
+        assert out.cost_cny is None
 
 
 # ── T31 评估对比工具（纯函数层，不依赖 DB） ────────────────────────────

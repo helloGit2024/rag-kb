@@ -106,10 +106,18 @@ class ItemOutcome:
     latency_ms: int = 0
     retrieve_ms: int = 0
     generate_ms: int = 0
+    cost_cny: float | None = None  # T33 被测链自身花费（不含裁判）
     count_in_latency: bool = True  # Q028 无模型调用，不计入延迟统计
     notes: str = ""
 
     def to_row(self, run_id: int) -> EvalRunItem:
+        # T33 float→Decimal：eval_run_items.cost_cny 是 Numeric(10,4)，
+        # 直接传 float 给 SQLAlchemy 会隐式转换或 mypy 报错
+        cost_dec = (
+            Decimal(str(round(self.cost_cny, 6)))
+            if self.cost_cny is not None
+            else None
+        )
         return EvalRunItem(
             run_id=run_id,
             item_id=self.item.item_id,
@@ -126,7 +134,7 @@ class ItemOutcome:
             latency_ms=self.latency_ms,
             retrieve_ms=self.retrieve_ms,
             generate_ms=self.generate_ms,
-            cost_cny=Decimal("0"),  # 本地 Ollama 无 API 调用费；Token 数在 scores 里
+            cost_cny=cost_dec,
             notes=self.notes or None,
         )
 
@@ -190,6 +198,22 @@ def aggregate(outcomes: list[ItemOutcome]) -> dict:
     judged = [o for o in outcomes if o.scores["faithfulness"] is not None]
     numeric = [o for o in judged if o.scores["numeric_accuracy"] is not None]
 
+    # T33 成本聚合：被测链自身 + 裁判调用自身（data-model 2.10「评估自身花费」）
+    # None 语义：某条成本没算（无单价表）→ 跳过该条，不混入 0.0
+    subj_costs: list[float] = [o.cost_cny for o in outcomes if o.cost_cny is not None]
+    judge_costs: list[float] = [
+        c
+        for o in outcomes
+        if (c := o.scores.get("judge_cost_cny")) is not None
+    ]
+    if subj_costs or judge_costs:
+        total_cny = round(sum(subj_costs) + sum(judge_costs), 6)
+    else:
+        total_cny = None
+    avg_cny = (
+        round(sum(subj_costs) / len(subj_costs), 6) if subj_costs else None
+    )
+
     return {
         "layer1": {
             "recall_at_5": _mean([o.scores["recall"] for o in layer1]),
@@ -229,9 +253,14 @@ def aggregate(outcomes: list[ItemOutcome]) -> dict:
             "sample_size": len(timed),
         },
         "cost_eval": {
-            "total_cny": 0.0,
-            "avg_cny": 0.0,
-            "note": "本地 Ollama，无 API 调用费；Token 记账见 tokens 字段",
+            "total_cny": total_cny,
+            "avg_cny": avg_cny,
+            "note": (
+                "无单价表（LLM_TOKEN_PRICES 未配置），成本未计入；"
+                "Token 记账见 tokens 字段"
+                if total_cny is None
+                else "含被测链 + 裁判调用"
+            ),
         },
         "tokens": {
             "prompt": sum(o.scores["prompt_tokens"] for o in outcomes),
@@ -263,6 +292,7 @@ def _run_oversize_item(item: GoldenItem) -> ItemOutcome:
             item=item,
             status="pass",
             scores=_zero_scores(),
+            cost_cny=0.0,  # 没调模型 = 精确 0 元，不是 None（None=没算）
             count_in_latency=False,
             notes=(
                 f"合成 {len(_OVERSIZE_QUESTION)} 字问题（上限 2000），"
@@ -273,6 +303,7 @@ def _run_oversize_item(item: GoldenItem) -> ItemOutcome:
         item=item,
         status="fail",
         scores=_zero_scores(),
+        cost_cny=0.0,
         count_in_latency=False,
         notes="超长问题未被 schema 校验拦截——成本防护失效（Q028 硬性要求）",
     )
@@ -336,6 +367,9 @@ def _score_chain_item(
     if judge_outcome is not None:
         scores["judge_prompt_tokens"] = judge_outcome.prompt_tokens
         scores["judge_completion_tokens"] = judge_outcome.completion_tokens
+        # T33 裁判自身花费进 scores（与 judge_prompt_tokens 同位，jsonb）
+        if judge_outcome.cost_cny is not None:
+            scores["judge_cost_cny"] = judge_outcome.cost_cny
         if judge_outcome.scores is None:
             notes = f"{notes}；{judge_outcome.error}" if notes else judge_outcome.error
         else:
@@ -370,6 +404,7 @@ def _score_chain_item(
         latency_ms=result.latency_ms,
         retrieve_ms=result.retrieve_ms,
         generate_ms=result.generate_ms,
+        cost_cny=result.cost_cny,  # T33 被测链自身花费
         notes=notes,
     )
 
@@ -470,6 +505,8 @@ def config_snapshot(kb_id: int) -> dict:
         "hybrid": False,  # V0.1 故意不做（纯向量）
         "judge_model": os.getenv("JUDGE_MODEL", ""),  # T29 裁判模型（与被测模型不同档）
         "eval_kb_id": kb_id,
+        # T33 有无价格表影响 cost_cny 数字可比性，进快照（compare 侧落软差异告警）
+        "token_prices_configured": bool(os.getenv("LLM_TOKEN_PRICES", "").strip()),
         "dataset": f"{DATASET_NAME}@{DATASET_VERSION}",
         "identity_map": IDENTITY_MAP,
     }
@@ -516,7 +553,13 @@ def print_table(metrics: dict) -> None:
             "false_refusal_rate", "误拒率", "≤ 0.05", l3["false_refusal_rate"]
         ),
         ("P95 延迟", "< 5.0s", f"{p95_s:.2f}s", _status("p95_latency_s", p95_s)),
-        ("单次成本", "< ¥0.03", "¥0.000", "✅"),
+        # T33：取真实 avg_cny，None 时 _fmt/_status 都显示 "—"
+        (
+            "单次成本",
+            "< ¥0.03",
+            f"¥{_fmt(metrics['cost_eval']['avg_cny'])}",
+            _status("cost_cny", metrics["cost_eval"]["avg_cny"]),
+        ),
     ]
     print("\n| 指标 | 目标 | 当前 | 状态 |")
     print("|---|---|---|---|")
@@ -694,12 +737,18 @@ def main() -> int:
         eval_repo.insert_run_items(
             session, run_id, [o.to_row(run_id) for o in outcomes]
         )
+        # T33 float→Decimal：eval_runs.cost_cny 是 Numeric(10,4)
+        # metrics["cost_eval"]["total_cny"] 含被测链 + 裁判（data-model 2.10）
+        total_cost = metrics["cost_eval"]["total_cny"]
+        run_cost_dec = (
+            Decimal(str(round(total_cost, 6))) if total_cost is not None else None
+        )
         eval_repo.finish_run(
             session,
             run_id,
             status="done",
             metrics=metrics,
-            cost_cny=Decimal("0"),
+            cost_cny=run_cost_dec,
             total_tokens_in=metrics["tokens"]["prompt"],
             total_tokens_out=metrics["tokens"]["completion"],
             wall_time_s=round(time.perf_counter() - wall_start),
