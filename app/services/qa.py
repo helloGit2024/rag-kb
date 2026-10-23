@@ -36,6 +36,7 @@ class QaResult:
 
     prompt_tokens / completion_tokens 仅 run_chain（无缓存路径）填真实值；
     缓存命中回放时为 0——命中分支没有真的调用模型（T32 成本埋点以此为据）。
+    cost_cny=None 同 prompt_tokens/completion_tokens——缓存命中时为 None。
     """
 
     answer: str
@@ -46,6 +47,8 @@ class QaResult:
     latency_ms: int
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    model_used: str | None = None
+    cost_cny: float | None = None
 
 
 def run_chain(
@@ -80,6 +83,8 @@ def run_chain(
         latency_ms=retrieve_ms + generate_ms,
         prompt_tokens=gen.prompt_tokens,
         completion_tokens=gen.completion_tokens,
+        model_used=gen.model_used,
+        cost_cny=gen.cost_cny,
     )
     return result, hits
 

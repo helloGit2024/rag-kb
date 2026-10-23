@@ -55,6 +55,8 @@ class GeneratedAnswer:
     prompt_tokens: int
     completion_tokens: int
     latency_ms: int
+    model_used: str | None = None
+    cost_cny: float | None = None
 
 
 def load_prompt_template(path: Path | None = None) -> str:
@@ -104,6 +106,8 @@ def generate_answer(
             prompt_tokens=0,
             completion_tokens=0,
             latency_ms=0,
+            model_used=None,
+            cost_cny=None,
         )
 
     prompt = _render_prompt(question, hits)
@@ -125,6 +129,8 @@ def generate_answer(
             prompt_tokens=result.prompt_tokens,
             completion_tokens=result.completion_tokens,
             latency_ms=result.latency_ms,
+            model_used=result.model,
+            cost_cny=result.cost_cny,
         )
 
     citations = _bind_citations(raw, hits)
@@ -155,6 +161,8 @@ def generate_answer(
             prompt_tokens=result.prompt_tokens,
             completion_tokens=result.completion_tokens,
             latency_ms=result.latency_ms,
+            model_used=result.model,
+            cost_cny=result.cost_cny,
         )
 
     return GeneratedAnswer(
@@ -164,6 +172,8 @@ def generate_answer(
         prompt_tokens=result.prompt_tokens,
         completion_tokens=result.completion_tokens,
         latency_ms=result.latency_ms,
+        model_used=result.model,
+        cost_cny=result.cost_cny,
     )
 
 

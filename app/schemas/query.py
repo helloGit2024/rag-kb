@@ -55,6 +55,13 @@ class QueryResult(BaseModel):
       - 拒答：refused=true，HTTP 仍为 200；
       - 降级：degraded=true，HTTP 仍为 200；
       - 错误：不走本模型，走统一的错误信封 {"error": {...}}。
+
+    T32 延迟与成本埋点字段全部声明：
+      - latency_ms（required）= retrieve_ms + generate_ms
+      - rerank_ms（nullable）：V0.1 故意不做重排（项目规则 ❌ 项）→ 始终 null
+      - cost_cny（nullable）：本地 Ollama 时 null，云端模型上线后自动有值
+      - trace_id（nullable）：V0.1 无链路追踪，留 null；V1 加真实 trace_id
+      - query_log_id（nullable）：V0.1 T34 未建 query_logs 表，留 null
     """
 
     # 契约字段名 model_used 恰好落在 pydantic 的 "model_" 保护前缀里，
@@ -67,5 +74,9 @@ class QueryResult(BaseModel):
     citations: list[CitationOut]
     latency_ms: int
     retrieve_ms: int | None = None
+    rerank_ms: int | None = None  # V0.1 故意不做重排 → 始终 null
     generate_ms: int | None = None
+    cost_cny: float | None = None  # 本地 Ollama 免费 → null
     model_used: str | None = None
+    trace_id: str | None = None  # V0.1 无链路追踪 → null
+    query_log_id: int | None = None  # V0.1 T34 未建表 → null

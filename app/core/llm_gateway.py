@@ -14,6 +14,7 @@ V-1 用 Ollama 本地 /v1 兼容层（qwen2.5）；将来换云端厂商
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import dataclass
@@ -25,6 +26,63 @@ import httpx
 _RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 
 _BACKOFF_BASE_S = 0.5  # 第 n 次重试前等待 0.5 * 2^(n-1) 秒：0.5s → 1s → 2s
+
+# ── T32：Token 单价表（元 / 1K token） ────────────────────────────────────────
+# 从 env LLM_TOKEN_PRICES 读（JSON 格式），内置默认空（本地 Ollama 无 API 费）。
+# 格式示例：{"qwen-plus": {"input": 0.004, "output": 0.012}, ...}
+# V0.1 嵌入模型固定本地 Ollama，不计费——这里只算生成层。
+def _load_price_table() -> dict[str, dict[str, float]]:
+    raw = os.getenv("LLM_TOKEN_PRICES", "").strip()
+    if not raw:
+        return {}
+    try:
+        table = json.loads(raw)
+        if not isinstance(table, dict):
+            return {}
+        return table
+    except json.JSONDecodeError:
+        # R7：配置格式错了显式失败，不让静默吞掉
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "LLM_TOKEN_PRICES JSON 解析失败，成本计费禁用。"
+        )
+        return {}
+
+_PRICE_TABLE: dict[str, dict[str, float]] = _load_price_table()
+
+
+def _lookup_price(model_name: str) -> tuple[float, float] | None:
+    """按 model 名匹配 (input_price_per_1k, output_price_per_1k) 或 None。
+
+    匹配顺序：全匹配 → 前缀匹配（如 "qwen2.5:7b-instruct-q8_0" 匹配到 "qwen2.5:7b"）。
+    None = 本地 Ollama 无 API 费，cost_cny 也将是 None。
+    """
+    if not _PRICE_TABLE:
+        return None
+    if model_name in _PRICE_TABLE:
+        p = _PRICE_TABLE[model_name]
+        return float(p.get("input", 0)), float(p.get("output", 0))
+    # 前缀匹配：依次尝试缩短到 ":" 之前的部分
+    parts = model_name.split(":")
+    for i in range(len(parts), 0, -1):
+        prefix = ":".join(parts[:i])
+        if prefix in _PRICE_TABLE:
+            p = _PRICE_TABLE[prefix]
+            return float(p.get("input", 0)), float(p.get("output", 0))
+    return None
+
+
+def _compute_cost_cny(
+    model_name: str, prompt_tokens: int, completion_tokens: int
+) -> float | None:
+    """按单价表算一次调用的成本（元）。无单价表返回 None。"""
+    price = _lookup_price(model_name)
+    if price is None:
+        return None
+    input_price, output_price = price
+    input_cost = (prompt_tokens / 1000) * input_price
+    output_cost = (completion_tokens / 1000) * output_price
+    return round(input_cost + output_cost, 6)
 
 
 class GatewayError(RuntimeError):
@@ -52,7 +110,10 @@ class GatewayError(RuntimeError):
 
 @dataclass
 class ChatResult:
-    """一次成功的生成调用结果（记账字段供 T32 延迟与成本埋点使用）。"""
+    """一次成功的生成调用结果（记账字段供 T32 延迟与成本埋点使用）。
+
+    cost_cny=None = 无单价表（本地 Ollama 免费）；有单价表时为 float。
+    """
 
     content: str
     model: str
@@ -61,6 +122,7 @@ class ChatResult:
     total_tokens: int
     latency_ms: int  # 从 chat() 进入到成功的总耗时（含重试与降级等待）
     attempts: int  # 本次 chat() 实际发出的 HTTP 请求总次数（含主与备用）
+    cost_cny: float | None = None
 
 
 @dataclass
@@ -176,6 +238,9 @@ def chat(
             continue
         result.attempts += prior_attempts
         result.latency_ms = int((time.monotonic() - started) * 1000)
+        result.cost_cny = _compute_cost_cny(
+            result.model, result.prompt_tokens, result.completion_tokens
+        )
         return result
     assert last_error is not None  # configs 非空，循环体必然赋值
     raise GatewayError(

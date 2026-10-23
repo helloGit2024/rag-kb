@@ -133,4 +133,6 @@ def query(
         latency_ms=result.latency_ms,
         retrieve_ms=result.retrieve_ms,
         generate_ms=result.generate_ms,
+        model_used=result.model_used,
+        cost_cny=result.cost_cny,
     )
