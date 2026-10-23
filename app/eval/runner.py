@@ -737,20 +737,21 @@ def main() -> int:
         eval_repo.insert_run_items(
             session, run_id, [o.to_row(run_id) for o in outcomes]
         )
-        # T33 float→Decimal：eval_runs.cost_cny 是 Numeric(10,4)
-        # metrics["cost_eval"]["total_cny"] 含被测链 + 裁判（data-model 2.10）
+        # T33 cost 与 tokens 口径对齐——都含被测链 + 裁判调用
+        # （data-model 2.10 cost_cny="评估自身的花费"，tokens 口径跟随）
         total_cost = metrics["cost_eval"]["total_cny"]
         run_cost_dec = (
             Decimal(str(round(total_cost, 6))) if total_cost is not None else None
         )
+        tokens = metrics["tokens"]
         eval_repo.finish_run(
             session,
             run_id,
             status="done",
             metrics=metrics,
             cost_cny=run_cost_dec,
-            total_tokens_in=metrics["tokens"]["prompt"],
-            total_tokens_out=metrics["tokens"]["completion"],
+            total_tokens_in=tokens["prompt"] + tokens["judge_prompt"],
+            total_tokens_out=tokens["completion"] + tokens["judge_completion"],
             wall_time_s=round(time.perf_counter() - wall_start),
             report_path=str(report_path.relative_to(PROJECT_ROOT)),
         )
