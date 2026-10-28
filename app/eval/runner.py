@@ -723,7 +723,11 @@ def main() -> int:
                 session, items, kb_id=args.kb_id, judge=judge_fn
             )
         except Exception as exc:
-            # R7：显式失败——run 落 failed + 原因，不上交一份"半成品的漂亮表格"
+            # R7：显式失败——run 落 failed + 原因，不上交一份"半成品的漂亮表格"。
+            # 先 rollback：异常可能来自数据库（连接中断/事务失效），
+            # 不先回滚则 finish_run 自身会 PendingRollbackError，
+            # 真正的原因被掩盖、run 还卡在 running（2026-10-24 实测踩到）。
+            session.rollback()
             eval_repo.finish_run(
                 session, run_id, status="failed", metrics=None,
                 error_reason=f"{type(exc).__name__}: {exc}"[:500],
