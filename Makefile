@@ -51,6 +51,11 @@ test:  ## 跑全部测试（透传 pytest 参数：make test T="-k permission"�
 	export REDIS_URL; \
 	PYTHONPATH=. $(PYTEST) -q $(T)
 
+# 注入测试集（AC-15 / T35）：走真实链路（localhost:8000 + 真 Ollama），
+# 8 例约 3 分钟，故不进 `make test`——安全行为回归与快测套件分开跑。
+test-injection:  ## 跑注入测试集（需 make dev + Ollama 在线，约 3 分钟）
+	RUN_INJECTION_TESTS=1 PYTHONPATH=. $(PYTEST) -q tests/test_injection.py $(T)
+
 lint:  ## 检查代码规范与类型错误
 	$(RUFF) check .
 	$(MYPY) app
