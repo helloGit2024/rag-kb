@@ -118,6 +118,8 @@
 | T33 | ★ **评估结果入库**：`eval_datasets` / `eval_runs` / `eval_run_items` + 迁移；`make eval` 第一版即写表 ✅ **已完成**（2026-10-20：`alembic/versions/0006_eval_tables.py` 严格按 data-model 2.11—2.13 建三表，含 `ck_active_requires_confirmed`（未确认禁启用，R13/R16 兜底）、`uq_run_baseline`（同数据集唯一基线）、`ck_attribution`（归因结论必带 candidate+confirmed_by，R15 兜底）；`models.py` 追加 3 个 ORM 类；新增 `app/repos/eval_repo.py`（register/activate/create_run/insert_items/finish/set_baseline，事务约定与 task_repo 一致）；`tests/test_eval_repo.py` 5 例真机集成——含 1 run + 30 item 落库读回 answer 全文与分段耗时、三条约束负例；`make migrate-down 0005`→`upgrade 0006` 回滚验证通过；`make lint` 全过、`make test` 226 passed。**遗留**：验收项"跑一次 `make eval`"随 T28 实现后复验） | T02 | 跑一次 `make eval`，库里多出 1 条 run + 30 条 item；item 里能看到 `answer` 全文与分段耗时；`make migrate-down` 可回滚 | **我能验收** |
 | T34 | **问答流水入库**：`query_logs` 表 + 迁移 + 每次问答落一行（含 `scope_snapshot`） ✅ **已完成**（2026-10-23：迁移 `0007_query_logs`（字段严格按 data-model 2.9）+ `models.QueryLog` + `query_log_repo.insert_log`（独立短事务，落表失败不阻断问答，只打 stderr）+ `qa._log_qa` 带 user_id 时落表并回填 `QueryResult.query_log_id`；`scope_snapshot` 记两轴 `{scope_keys, kb_ids}`，`kb_id` 仅单库时有值；真机：curl 后新增一行（user_id=1 / 5 块 / cost=null / model 有值），`make migrate-down` 与 `make migrate` 双向验证通过；测试 +6 条） | T15,T32 | 提一个问题后库里多一行；`scope_snapshot` 与生效权限一致；`make migrate-down` 能回滚 | **我能验收** |
 
+| T35 | **注入测试集（AC-15 补债）**：8 条直接注入用例（`evals/security/injection_direct_v1.yaml`）+ 真实链路行为断言（`tests/test_injection.py`）+ `make test-injection`；AC-15 的"审计日志记录 attack_attempt"经 2026-10-23 裁决挪 V1（spec.md 已改标） | V0.1 退出门禁 | 8 条用例全部通过：HTTP 200、答案不含提示词特征片段、未执行注入指令（拒答=R5 固定句式 / 作答=带引用）；不进 `make test`（单独目标，约 3 分钟） | **我能验收** |
+
 > **为什么 V0.1 就把这些表建起来，而界面却要等到 V1？**
 > 因为**地基要早、平台要晚**。
 > 评估本身就是 V0.1 的退出门禁（见 `releases.md`），
