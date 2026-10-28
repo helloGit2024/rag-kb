@@ -248,7 +248,7 @@ CREATE TRIGGER trg_audit_immutable BEFORE UPDATE OR DELETE ON audit_logs
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | id | bigserial PK | |
-| user_id / kb_id | bigint | |
+| user_id / kb_id | bigint | kb_id 仅"恰好单库"查询时落值；多库/全库查询为 NULL，完整范围以 scope_snapshot 为准 |
 | question | text | |
 | scope_snapshot | jsonb | ★ 当时生效的权限范围（**排查越权问题的唯一手段**） |
 | retrieved_chunk_ids | bigint[] | 检索命中的块 |
