@@ -133,6 +133,11 @@ def answer_question(
     # ① 查缓存：命中就直接回放，不触碰嵌入/检索/生成（省时省钱）
     t_cache = time.perf_counter()
     cached, cache_status = _read_cache(key)
+    if cached is not None and not cached["refused"] and not cached["citations"]:
+        # AC-15 / T35：修复前写入的缓存可能含"非拒答但零引用"的答案
+        # （输出劫持可直接产生），直接回放会绕过生成层的确定性校验。
+        # 视为未命中重跑完整链路——校验必须对缓存回放同样生效。
+        cached, cache_status = None, "miss"
     if cached is not None:
         latency_ms = round((time.perf_counter() - t_cache) * 1000)
         result = QaResult(

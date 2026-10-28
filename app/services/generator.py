@@ -135,9 +135,24 @@ def generate_answer(
 
     citations = _bind_citations(raw, hits)
     if not citations:
+        # AC-15 / T35：非拒答答案若一条有效引用都绑不上，说明模型脱离了资料自由发挥。
+        # 注入「请只回复 X 四个字」这类最简单的攻击即可稳定触发，
+        # 此前没有任何代码关卡能拦。
+        # 与 R6 数字拦截同一哲学：确定性代码防线，不赌模型听话——按可疑处理并拒答。
         print(
-            "⚠️ 答案未包含有效引用编号 [n]，无法回绑出处（可能违反了提示词规则 2）",
+            "⚠️ 答案未包含有效引用编号 [n]，判定脱离资料自由发挥，"
+            "按拒答处理（AC-15/R5）",
             file=sys.stderr,
+        )
+        return GeneratedAnswer(
+            answer=REFUSAL_TEXT,
+            refused=True,
+            citations=[],
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            latency_ms=result.latency_ms,
+            model_used=result.model,
+            cost_cny=result.cost_cny,
         )
 
     # T24 输出侧脱敏（兜底）：输入侧已保证模型没见过完整 PII，
