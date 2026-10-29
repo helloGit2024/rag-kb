@@ -234,3 +234,52 @@ def test_gateway_error_propagates():
 def test_empty_question_rejected():
     with pytest.raises(ValueError):
         generate_answer("   ", _hits())
+
+
+def _strategy_hits() -> list[ChunkHit]:
+    """Q027 型的检索结果：只有 2026 年的战略目标文档。"""
+    content = "# 公司 2026 年战略目标\n2026 年营收目标同比增长 40%。"
+    return [
+        ChunkHit(
+            chunk_id=31,
+            content=content,
+            doc_id=3,
+            doc_title="公司2026年战略目标.txt",
+            char_start=0,
+            char_end=len(content),
+            score=0.91,
+        )
+    ]
+
+
+def test_time_mismatch_refused_without_model_call(capsys):
+    """T82：问"明年"但资料只有 2026 → 生成前拒答，且不调用模型（Q027 型缺陷）。"""
+    asked = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(request)
+        raise AssertionError("时间错配必须在调用模型之前拒答（T82）")
+
+    r = generate_answer(
+        "明年的战略目标是什么", _strategy_hits(), transport=httpx.MockTransport(handler)
+    )
+
+    assert asked == []
+    assert r.refused is True
+    assert r.answer == REFUSAL_TEXT
+    assert r.citations == []
+    assert (r.prompt_tokens, r.completion_tokens) == (0, 0)
+    assert r.model_used is None
+    assert "不匹配" in capsys.readouterr().err
+
+
+def test_time_match_not_refused():
+    """时间匹配的正常题不得被误拒（T82 验收第二条）。"""
+    r = generate_answer(
+        "2026 年的战略目标是什么",
+        _strategy_hits(),
+        transport=_mock("2026 年营收目标同比增长 40%[1]。"),
+    )
+    assert r.refused is False
+    assert [c.chunk_id for c in r.citations] == [31]
+

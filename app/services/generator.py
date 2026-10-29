@@ -21,6 +21,7 @@ import httpx
 from app.core.llm_gateway import chat
 from app.repos.chunk_repo import ChunkHit
 from app.services.pii import redact_pii
+from app.services.time_semantics import check_time_mismatch
 
 # R5：拒答必须且仅输出这一句，结构化字段置 refused=true
 REFUSAL_TEXT = "根据现有资料，我无法回答这个问题。"
@@ -108,6 +109,36 @@ def generate_answer(
             latency_ms=0,
             model_used=None,
             cost_cny=None,
+        )
+
+    # T82：生成前做时间语义比对。问题里的年份词与检索块的年份锚点完全不相交
+    # → 时间错配，按拒答处理。代码判定，不靠提示词——Q027 实证小模型会无视
+    # 提示词里的时间要求（run 369：问"明年"却输出 2026 年目标，refused=false）。
+    # 放在调模型之前：这一问注定作废，省掉一次无意义的模型调用。
+    time_check = check_time_mismatch(question, hits)
+    if time_check.mismatched:
+        print(
+            "⚠️ 问题时间与检索资料时间不匹配，按拒答处理（T82）："
+            f"question_years={sorted(time_check.question_years)} "
+            f"doc_years={sorted(time_check.doc_years)}",
+            file=sys.stderr,
+        )
+        return GeneratedAnswer(
+            answer=REFUSAL_TEXT,
+            refused=True,
+            citations=[],
+            prompt_tokens=0,
+            completion_tokens=0,
+            latency_ms=0,
+            model_used=None,
+            cost_cny=None,
+        )
+    if time_check.reason == "no_doc_year_anchor":
+        # 问题里有年份词但资料完全没写年份：无法验证，放行但留痕（不硬拒，避免误拒）
+        print(
+            "⚠️ 问题含年份词，但检索块无任何年份锚点，无法校验时间（T82，仅告警）："
+            f"question_years={sorted(time_check.question_years)}",
+            file=sys.stderr,
         )
 
     prompt = _render_prompt(question, hits)
