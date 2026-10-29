@@ -197,6 +197,24 @@ def test_faithful_number_passes():
     assert len(r.citations) == 1
 
 
+def test_number_from_uncited_hit_not_refused(capsys):
+    """数字正确但 [n] 绑错块 → 不再误拒（T81，Q008/Q030 型缺陷）。
+
+    模型把两块内容合并后只标了一个编号：答案里的 10 天出自 [1]，
+    却写成了 [2]。R6 只该拦"资料里根本没有的数字"，不该因引用标漏误判编造。
+    """
+    r = generate_answer(
+        "工作满 10 年年假多少天？",
+        _hits(),
+        transport=_mock("工作满 10 年，年假为 10 天[2]。"),
+    )
+    assert r.refused is False
+    assert [c.chunk_id for c in r.citations] == [12]
+    err = capsys.readouterr().err
+    assert "引用编号可能绑错" in err
+    assert "10" in err
+
+
 def test_prompt_template_contract():
     tpl = load_prompt_template()
     assert REFUSAL_TEXT in tpl

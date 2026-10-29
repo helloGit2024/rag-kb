@@ -160,9 +160,12 @@ def generate_answer(
     # 在 R6 校验之前脱：掩码头尾数字是原文子串，_unverifiable_numbers 不误判。
     raw = redact_pii(raw)
 
-    # R6 + rag-core「生成」规则：答案里的数字必须在被引原文中逐字出现，
+    # R6 + rag-core「生成」规则：答案里的数字必须在检索原文中逐字出现，
     # 否则按可疑处理并拒答——改写数字比答不出来严重得多。
     # （严重度已由项目所有者确认：V-1 即按拒答处理，不降为仅告警。）
+    # T81：比对范围是**全部检索块**而非仅被引块——模型常把多块内容合并后
+    # 只标一个 [n]，答案数字出自未被引用的块属于"引用绑错"，
+    # 不属于"编造数字"，不应误拒（Q008/Q030 实证）。
     bad = _unverifiable_numbers(raw, citations, hits)
     if bad:
         print(
@@ -247,18 +250,33 @@ def _is_refusal(text: str) -> bool:
 def _unverifiable_numbers(
     answer: str, citations: list[Citation], hits: list[ChunkHit]
 ) -> list[str]:
-    """返回答案里「在被引原文中逐字找不到」的数字串（R6）。
+    """返回答案里「在全部检索块中都逐字找不到」的数字串（R6 / T81）。
 
     只取数字串本身比对（如答案写"10 天"、原文写"10天"仍算通过），
     这样既能抓住"1204 万改成约 1200 万"这类改写，
     又不会因为空格/标点的排版差异误判。
+
+    ★ T81：比对范围是全部检索块（不是仅被引块）。模型把多块内容合并后
+      只标一个编号时，数字可能出自未被引用的块——那是引用绑错，
+      不是编造数字。仅当数字在所有检索块中都找不到时才判可疑并拒答；
+      "只在未引用块里找到"另打告警，保留引用准确率的可观测线索。
     """
-    cited_text = "\n".join(hits[c.index - 1].content for c in citations)
-    source = cited_text if citations else "\n".join(h.content for h in hits)
-    # 先剔除 [1][2] 这类引用编号，它们不是答案内容里的数字
-    body = _CITATION_RE.sub("", answer)
+    body = _CITATION_RE.sub("", answer)  # 引用编号不是答案内容里的数字
+    cited_idx = {c.index for c in citations}
+    cited_text = "\n".join(hits[i - 1].content for i in cited_idx)
+    other_text = "\n".join(
+        h.content for i, h in enumerate(hits, start=1) if i not in cited_idx
+    )
     missing = []
     for token in dict.fromkeys(_NUMBER_RE.findall(body)):
-        if token not in source:
-            missing.append(token)
+        if token in cited_text:
+            continue
+        if token in other_text:
+            print(
+                f"⚠️ 答案数字 {token} 出自未被引用的检索块，"
+                "引用编号可能绑错（T81，仅告警不拒答）",
+                file=sys.stderr,
+            )
+            continue
+        missing.append(token)
     return missing
